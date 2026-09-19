@@ -63,6 +63,7 @@ class Fake:
         self.scenario = os.environ.get("MHPROOF_FAKE_SCENARIO", "happy")
         self.first_call_id = None
         self.discovered_proof_tools = False
+        self.channel_registered = False
         self.rules = json.loads(os.environ.get("MHPROOF_FAKE_RULES", "[]"))
         self.rule_hits = [0] * len(self.rules)
         threading.Thread(target=self.work, daemon=True).start()
@@ -85,7 +86,14 @@ class Fake:
 
     def channel(self, packet):
         if packet["method"] == "notifications/claude/channel":
-            self.queue.put((self.decode(packet["params"]["content"]), None))
+            message = self.decode(packet["params"]["content"])
+            if not self.channel_registered:
+                self.fault("early-channel-notification-dropped", message_id=message["id"])
+                return
+            if self.scenario == "claude-channel-drop" and message["case_id"] == "startup":
+                self.fault("registered-channel-dropped-startup", message_id=message["id"])
+                return
+            self.queue.put((message, None))
 
     @staticmethod
     def decode(text):
@@ -355,6 +363,19 @@ class Fake:
                 cfg = json.loads(Path(sys.argv[sys.argv.index("--mcp-config") + 1]).read_text())
                 mcp = cfg["mcpServers"]["coord_proof"]
                 self.connect_mcp(mcp["command"], mcp["args"])
+                # Initial launch turn completion is NOT channel registration.
+                self.hook("Stop")
+                if self.scenario == "claude-channel-delayed":
+                    time.sleep(0.6)
+                    self.fault("delayed-channel-handler-registration")
+                self.channel_registered = True
+                from datetime import datetime, timezone
+                stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                marker = 'MCP server "coord_proof": Channel notifications registered'
+                if self.scenario == "claude-channel-unobserved":
+                    marker = 'MCP server "coord_proof": future unrecognized readiness format'
+                    self.fault("unobserved-channel-registration")
+                Path(sys.argv[sys.argv.index("--debug-file") + 1]).write_text(stamp + " [DEBUG] " + marker + "\n")
                 self.child.wait()
             else:
                 self.wire.read()

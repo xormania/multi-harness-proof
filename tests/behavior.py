@@ -20,6 +20,9 @@ SCENARIOS = {
     "happy": ("pass", True, "Full coordination and work with later-turn delivery"),
     "delayed-duplicate": ("pass", True, "Late native evidence and duplicate observations/completions"),
     "prose-title": ("pass", False, "Human-facing Grok titles with canonical tool identity"),
+    "claude-channel-delayed": ("pass", True, "MCP connects before Claude registers its channel handler"),
+    "claude-channel-unobserved": ("unverified", False, "Channel registration log format is unrecognized"),
+    "claude-channel-drop": ("unverified", False, "A registered channel drops the startup notification"),
     "grok-discovery": ("pass", True, "Grok discovers the MCP catalog then dispatches every proof tool via use_tool"),
     "grok-discovery-only": ("unverified", False, "Grok catalog discovery cannot cover an unobserved ready tool call"),
     "grok-wrong-dispatch": ("unverified", False, "Grok use_tool targets an unrelated MCP server"),
@@ -63,7 +66,8 @@ def assess(scenario, report, events, settings=None):
         require(audit.get("status") == "pass", "Tool audit did not pass")
         require(len(report.get("work", [])) == (3 if work else 0) and
                 all(w["status"] == "pass" for w in report.get("work", [])), "Incomplete work scores")
-    elif scenario not in {"missing-hook", "missing-completion", "grok-discovery-only"} and not settings:
+    elif scenario not in {"missing-hook", "missing-completion", "grok-discovery-only",
+                           "claude-channel-unobserved", "claude-channel-drop"} and not settings:
         require(any(c["status"] == "pass" for c in cases), "Earlier successful evidence was not preserved")
     if expected != "pass" and scenario != "incorrect-work":
         require(not report.get("work"), "Failure should stop before the work stage")
@@ -76,6 +80,27 @@ def assess(scenario, report, events, settings=None):
         require(audit.get("unmatched_relay_calls", 0) > 0, "Native evidence gap was not audited")
     if scenario in {"missing-hook", "missing-completion", "grok-discovery-only"}:
         require(not cases, "Unready harnesses must not start message cases")
+    if scenario.startswith("claude-channel-"):
+        ready = [e for e in events if e["event"] == "channel_ready" and e["peer"] == "claude"]
+        submitted = [e for e in events if e["event"] == "submitted" and e["peer"] == "claude"]
+        startup = report.get("startup", {}).get("claude", {})
+        if scenario == "claude-channel-unobserved":
+            require(not ready and not submitted, "Unobserved handler must prevent channel submission")
+            require("Claude channel handler registration" in report.get("phase", ""), "Wrong startup failure phase")
+            require("channel_handler_registered" in startup.get("missing", []), "Missing channel gate diagnostic")
+        else:
+            require(len(ready) == 1 and submitted and ready[0]["seq"] < min(e["seq"] for e in submitted),
+                    "Channel handler must be observed before first submission")
+        if scenario == "claude-channel-delayed":
+            require(not startup.get("missing"), "Delayed channel must reach verified readiness")
+        else:
+            require(not cases and not startup.get("ready_report"), "Missing readiness cannot start message cases")
+            require("verification_timeout" in kinds, "Missing readiness timeout evidence")
+        if scenario == "claude-channel-drop":
+            require(startup.get("instruction_submitted") and "ready_report" in startup.get("missing", []),
+                    "Registration and submission must not substitute for model receipt")
+            require(all(report.get("startup", {}).get(p, {}).get("ready_report") for p in ("codex", "grok")),
+                    "Report must identify Claude's missing readiness while preserving other peers' reports")
     if scenario == "session-drift":
         require("native_identity_error" in kinds, "Missing native identity failure")
     if scenario == "unsupported-interject":

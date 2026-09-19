@@ -16,7 +16,7 @@ from urllib.error import HTTPError
 
 from mhproof.adapters import Codex, Grok
 from mhproof.contract import validate_tool
-from mhproof.compat import supports_tool_output
+from mhproof.compat import ClaudeChannelLog, supports_tool_output
 from mhproof.evidence import claude_hook, grok_tool_identity, grok_tool_observation, tool_audit
 from mhproof.relay import Client, State, serve, write_json
 from mhproof.rpc import RPC, RPCError
@@ -348,6 +348,55 @@ class VerifierTests(unittest.TestCase):
         old["definitions"]["TurnStartParams"]["properties"]["toolOutput"] = {}
         self.assertTrue(supports_tool_output([old]))
         self.assertIsNone(supports_tool_output([{"properties": {"toolOutput": {}}}]))
+
+
+class ClaudeChannelLogTests(unittest.TestCase):
+    marker = b'2026-09-19T22:46:26.177Z [DEBUG] MCP server "coord_proof": Channel notifications registered\n'
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "claude-debug.log"
+        self.reader = ClaudeChannelLog(self.path)
+
+    def test_missing_file_and_partial_line_do_not_release_gate(self):
+        self.assertIsNone(self.reader.poll())
+        self.path.write_bytes(self.marker[:-1])
+        self.assertIsNone(self.reader.poll())
+        with self.path.open("ab") as stream:
+            stream.write(b"\n")
+        observed = self.reader.poll()
+        self.assertEqual(observed["source_line"], 1)
+        self.assertEqual(observed["native_timestamp"], "2026-09-19T22:46:26.177Z")
+        self.assertEqual(self.reader.poll(), observed)
+
+    def test_other_server_quoted_content_and_connection_are_not_registration(self):
+        lines = [self.marker.replace(b'"coord_proof"', b'"other_server"'),
+                 b'quoted: ' + self.marker, self.marker.replace(b'[DEBUG]', b'[INFO]'),
+                 self.marker.replace(b'Channel notifications registered', b'Successfully connected'),
+                 self.marker.replace(b'Channel notifications registered', b'future ready signal')]
+        self.path.write_bytes(b''.join(lines))
+        self.assertIsNone(self.reader.poll())
+        with self.path.open("ab") as stream:
+            stream.write(self.marker)
+        self.assertEqual(self.reader.poll()["source_line"], 6)
+
+    def test_oversized_partial_line_cannot_supply_a_marker_suffix(self):
+        self.path.write_bytes(b'x' * 140000 + self.marker + self.marker)
+        observed = None
+        for _ in range(4):
+            observed = self.reader.poll()
+            self.assertLessEqual(len(self.reader.pending), 65536)
+            if observed:
+                break
+        self.assertEqual(observed["source_line"], 2)
+
+    def test_log_truncation_is_explicit_failure(self):
+        self.path.write_bytes(b'unrelated line\n')
+        self.assertIsNone(self.reader.poll())
+        self.path.write_bytes(b'')
+        with self.assertRaisesRegex(ValueError, "truncated"):
+            self.reader.poll()
 
 
 class GrokToolContractTests(unittest.TestCase):

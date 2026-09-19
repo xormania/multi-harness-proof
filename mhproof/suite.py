@@ -10,6 +10,7 @@ import time
 
 from . import VERSION
 from .contract import INSTRUCTIONS
+from .compat import ClaudeChannelLog
 from .evidence import native_call, tool_audit
 from .relay import State, serve, write_json
 from .telemetry import manifest
@@ -109,6 +110,8 @@ class Suite:
         self.work = work
         self.work_results = []
         self.phase = "initializing"
+        self.starting = False
+        self.last_startup_progress = None
         checks = checks or {}
         self.round_trip_pairs = checks.get("round_trip_pairs", list(itertools.permutations(state.peers, 2)))
         self.busy_pairs = checks.get("busy_pairs", [(state.peers[(i + 1) % len(state.peers)], target)
@@ -117,6 +120,26 @@ class Suite:
 
     def planned(self):
         return len(self.round_trip_pairs) + len(self.busy_pairs) + (self.burst_per_peer * len(self.state.peers) if self.work else 0)
+
+    def startup_evidence(self, events):
+        result = {}
+        for peer, memory in self.memories.items():
+            own = [e for e in events if e["peer"] == peer]
+            args = {"phase": "ready", "case_id": "startup", "nonce": "", "memory": memory, "peer": ""}
+            report = next((e for e in own if e["event"] == "report" and e["report"] == args), None)
+            observed = native_call(events, peer, "proof_report", args, self.state.sessions) if peer in self.state.sessions else None
+            channel = next((e for e in own if e["event"] == "channel_ready"), None)
+            checks = {
+                "registered": peer in self.state.sessions,
+                "mcp_connected": any(e["event"] == "mcp_ready" for e in own) if peer != "codex" else None,
+                "channel_handler_registered": bool(channel) if peer == "claude" else None,
+                "instruction_submitted": any(e["event"] == "submitted" and e.get("case_id") == "startup" for e in own),
+                "ready_report": bool(report), "native_ready_call": bool(observed)}
+            result[peer] = {**checks, "missing": [name for name, value in checks.items() if value is False],
+                "ready_report_seq": report["seq"] if report else None,
+                "native_ready_seq": observed["seq"] if observed else None,
+                "channel_registration_seq": channel["seq"] if channel else None}
+        return result
 
     def wait(self, predicate, timeout=None):
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
@@ -132,6 +155,14 @@ class Suite:
                        e.get("native_id") != self.state.sessions[e["peer"]]["session_id"]]
             if changed:
                 raise RuntimeError("Observed native session identity differs from registration: " + changed[-1]["peer"])
+            if self.starting:
+                progress = {"phase": self.phase, "peers": self.startup_evidence(events)}
+                if progress != self.last_startup_progress:
+                    self.last_startup_progress = progress
+                    self.state.emit("startup_progress", **progress)
+                    summary = "; ".join(peer + ": " + (", ".join(info["missing"]) or "ready evidence matched")
+                                        for peer, info in progress["peers"].items())
+                    print("Startup [" + self.phase + "] — " + summary, flush=True)
             value = predicate(events)
             if value:
                 return value
@@ -141,7 +172,8 @@ class Suite:
                         timeout_seconds=self.timeout if timeout is None else timeout,
                         activity={peer: next((e for e in reversed(events) if e["event"] == "activity" and
                                              e["peer"] == peer), None) for peer in self.state.peers},
-                        tool_audit=tool_audit(events, self.state.sessions))
+                        tool_audit=tool_audit(events, self.state.sessions),
+                        startup=self.startup_evidence(events) if self.starting else None)
         raise TimeoutError("No complete evidence during " + self.phase +
                            "; inspect native observations, tool permissions, and delivery traces")
 
@@ -157,12 +189,23 @@ class Suite:
         self.wait(idle)
 
     def startup(self):
+        self.starting = True
         self.phase = "participant registration and MCP connection"
         def connected(events):
             return all(p in self.state.sessions for p in self.state.peers) and all(
                 p == "codex" or any(e["event"] == "mcp_ready" and e["peer"] == p for e in events)
                 for p in self.state.peers)
         self.wait(connected, self.startup_timeout)
+        if "claude" in self.state.peers:
+            self.phase = "Claude channel handler registration (claude-debug.log)"
+            channel_log = ClaudeChannelLog(self.state.directory / "claude-debug.log")
+            def channel_ready(events):
+                observed = channel_log.poll()
+                if observed:
+                    self.state.emit("channel_ready", "claude", **observed)
+                    return True
+                return False
+            self.wait(channel_ready)
         self.phase = "native channel/tool readiness (ready report and matching native tool observation)"
         for peer, memory in self.memories.items():
             prompt = (INSTRUCTIONS + "\nYour peer identity is " + peer + ".\nPRIVATE_MEMORY=" + memory +
@@ -180,6 +223,7 @@ class Suite:
         self.wait(ready)
         self.phase = "startup native completion"
         self.settled()
+        self.starting = False
         print("All peers ready in their persistent native sessions.", flush=True)
 
     def case(self, source, target, busy):
@@ -369,6 +413,7 @@ def run_suite(directory, peers, timeout=180, startup_timeout=600, work=True, mod
             if result["status"] != "pass":
                 result["diagnostics"] = case_diagnostics(events, result, suite.memories[result["target"]])
         report.update(finished=time.time(), sessions=state.sessions, phase=suite.phase,
+                      startup=suite.startup_evidence(events),
                       tool_audit=tool_audit(events, state.sessions),
                       evidence_last_seq=events[-1]["seq"] if events else 0,
                       capability_probes=[e for e in events if e["event"] == "protocol_capability"])

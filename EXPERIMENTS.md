@@ -94,7 +94,7 @@ experiment uses new sessions and unique challenge values.
 }]
 ```
 
-`preset` defaults to `happy`. Any of the 21 presets in [TESTING.md](TESTING.md)
+`preset` defaults to `happy`. Any of the 24 presets in [TESTING.md](TESTING.md)
 can be selected. Custom rules are checked in listed order as the fake peer
 handles a message. They are reproducible rules, not random fault injection.
 

@@ -4,9 +4,9 @@ Date: 2026-09-19. Runtime: Python 3.12, Linux.
 
 ## Verified locally
 
-- **69 tests passed** for version 0.3.1 in 141.913 seconds. This includes 21
-  process-level behavior scenarios, configurable experiments, and the existing
-  unit/integration checks.
+- Version 0.3.2: **81 offline tests passed** in 165.288 seconds, including 24
+  process-level behavior scenarios, configurable experiments, updater checks,
+  and the existing unit/integration checks.
 - The integration test runs the actual relay, adapters, MCP server, and verifier
   against deterministic **fake** Codex, Claude, and Grok processes. It checks
   all 15 message cases, three work scores, and independently supplied native
@@ -39,11 +39,19 @@ Date: 2026-09-19. Runtime: Python 3.12, Linux.
 
 ## Behavior and experiment coverage
 
-- The 21 mocked process scenarios cover successful delayed/duplicate delivery,
+- The 24 mocked process scenarios cover successful delayed/duplicate delivery,
   display-title changes, dropped handling, wrong context, stale nonces, missing
   native observations/hooks/completion, changed sessions, unsupported methods,
   denied permissions, process crashes, malformed stdout, incorrect work, reused
   call IDs, forbidden tools, and operator interruption.
+- Claude startup scenarios reproduce a connected MCP server whose channel
+  handler registers later. The fake drops notifications sent before registration,
+  so the new gate must precede delivery. Unknown registration text prevents
+  submission; a registered handler that drops the notification still cannot
+  satisfy readiness. Native registration logs are not delivery evidence.
+- The explicit harness updater passes fake-only tests for version capture,
+  dry runs, partial download failure, independent updater failures, and unknown
+  install methods. No real harnesses or package managers were updated here.
 - Grok discovery coverage uses the pinned source's `search_tool` query/limit
   schema and `use_tool` tool_name/tool_input wrapper. A mocked catalog search
   invokes the actual MCP `tools/list`; every subsequent proof execution is
@@ -87,9 +95,24 @@ exact proof MCP targets from `use_tool`. The discovery and dispatch schemas were
 reviewed at public source commit `482711333c7195dc16a272777f86086d615e2afb`.
 The installed binary's `04b7ffed98c6` revision could not be resolved in the public
 repository, so that source review is not a verification of the exact installed
-build. The supplied report has no raw discovery arguments; a fresh live run
-must establish compatibility with its actual notifications. No patched live pass
-has been observed.
+build. A subsequent user-supplied v0.3.1 diagnostic bundle does contain the live
+discovery and wrapped `use_tool` call: Grok produced a correct ready report with
+matching native evidence. Codex also produced a correct verified ready report.
+These are startup results, not cross-harness round trips.
+
+The v0.3.1 bundle identifies a separate Claude Code 2.1.278 startup race: our
+notification was written about 5 ms before its native debug log reported channel
+handler registration. Claude ran only its initial launch turn and produced no
+ready report. This supports early notification loss as the cause; none of the
+nine selected message cases ran. Run paths, session identifiers, prompts, and
+private markers from the supplied bundle are not included in this repository.
+
+Version 0.3.2 waits for that handler-registration marker in the fresh run-local
+debug log before queuing startup instructions. The native log format is an
+explicit compatibility dependency, not a documented readiness acknowledgment.
+Missing/changed output leaves the run unverified with per-peer startup diagnostics;
+actual receipt still requires the same memory marker and native tool evidence.
+The fix has not yet been tested in a patched live run.
 
 ## Still requires a local live run
 

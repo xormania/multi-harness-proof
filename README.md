@@ -10,9 +10,9 @@ participant stays in one native session throughout the experiment.
 The output is evidence: message traces, verified replies, scored work, and
 diagnostics that explain what succeeded or failed on a particular installation.
 
-> **Experimental:** version 0.3.1 includes 21 mocked end-to-end behavior scenarios
-> and configurable coordination experiments. It fixes a reported live startup
-> rejection of Grok's MCP discovery tool; a complete live pass remains unverified.
+> **Experimental:** version 0.3.2 includes 24 mocked end-to-end behavior scenarios
+> and configurable coordination experiments. Startup now waits for Claude's
+> channel handler registration; a complete live pass remains unverified.
 > See [validation status](VALIDATION.md).
 
 ## What gets tested
@@ -63,10 +63,52 @@ schema support stops that launch with a diagnostic. Neither the probe nor the
 tests make model calls. Account policies, native hooks, and permission prompts
 still need to be checked during a live run.
 
+### Update an existing clone and the harnesses
+
+Keep the checkout and its previous run directories. Pull new proof code with:
+
+```bash
+git pull --ff-only
+```
+
+To update all three installed harnesses, run this separately between sessions:
+
+```bash
+bash scripts/update-harnesses.sh
+# Optional: preview the selected commands without downloading or updating.
+bash scripts/update-harnesses.sh --dry-run
+```
+
+The script uses the [documented Codex updater](https://developers.openai.com/codex/cli)
+for standalone installations, the existing npm global installation, or Homebrew.
+Auto detection recognizes the usual `~/.local/bin/codex`, npm-global, and Homebrew
+paths. For a custom installation, explicitly select `--codex-method standalone`,
+`npm`, or `brew` after checking how it was installed. An unknown method is reported
+without replacing that installation.
+
+For native/npm Claude installations it runs
+[`claude update`](https://code.claude.com/docs/en/setup#update-manually);
+recognized Homebrew Claude installations use their existing cask. Grok uses
+[`grok update`](https://docs.x.ai/build/cli/reference) with automatic background
+updating disabled for that invocation. Vendor release-channel settings still apply.
+
+Each invocation creates `runs/updates-<timestamp>-<pid>/` containing command/path
+records, before/after versions, updater output, and `summary.tsv`. Codex's downloaded
+standalone installer is saved before execution; a failed download is never run.
+Each harness is attempted even if another fails, with a nonzero final exit for
+failures, missing executables, or an unknown install method. Missing harnesses
+are not installed. `updated-or-current` means the updater and version probe
+succeeded; inspect its output and versions for the actual change.
+
+The script does not invoke `sudo`, edit permission/MCP/authentication settings,
+or run model sessions. Vendor updaters manage their own installed files and
+maintenance state. Proof launch scripts never invoke this maintenance script.
+For managed OS-package installations, use that package manager's update command.
+
 ### Explore failures offline
 
 ```bash
-# Keep the reports and telemetry from all 21 predefined behavior scenarios.
+# Keep the reports and telemetry from all 24 predefined behavior scenarios.
 bash scripts/behavior.sh --dir runs/mock1
 
 # Configure message pairs, bursts, delays, and dropped messages; preserve each run.
@@ -102,6 +144,8 @@ check Grok's window for any permission prompts for the proof tools.
 The experiment starts automatically when all participants and tools are ready.
 Watch the relay window for results and the run directory. The helper changes
 settings only for the tmux session/windows it creates.
+The relay prints each peer's missing startup conditions as they change. Claude
+has a separate channel-handler registration gate after its MCP connection.
 
 `session launched` means a native session exists; proof readiness still requires
 the agent's verified ready report. `Pane is dead (status 0)` is a wrapper exit,
@@ -187,6 +231,14 @@ native identity evidence. Missing native observations leave the run unverified.
 Claude's hooks are supplied through a generated run-local `--settings` file.
 Startup requires a ready report with the channel-delivered memory marker and a
 matching native tool observation; an MCP connection alone is insufficient.
+Before sending any startup instructions, the controller also waits for Claude's
+native `Channel notifications registered` entry for `coord_proof` in this run's
+`claude-debug.log`. The entry observed in Claude Code 2.1.278 is recorded as
+`channel_ready`, including its timestamp and source line. This is a
+**version-sensitive diagnostic gate**, not a protocol acknowledgment or session
+identity proof. Missing or changed log text leaves startup unverified at an
+explicit channel-registration phase. No startup messages are retried, and the
+ready-report/native-tool checks still establish actual receipt.
 Grok prefers versioned `x.ai/tool` wire-name metadata, with exact ACP tool titles
 as a fallback when that metadata is absent. Unknown versions, conflicting names,
 and unrelated tools stop verification; display prose alone is insufficient.
@@ -252,6 +304,8 @@ Local telemetry is enabled for every run:
 | Evidence | Files |
 | --- | --- |
 | Verdicts, session IDs, settings, capability probes, stage, timings, and tool audit | `report.json` |
+| Per-peer missing startup conditions and ready-report/native evidence sequences | `report.json` (`startup`), `events.jsonl` (`startup_progress`) |
+| Claude channel registration gate, native timestamp, and debug source line | `events.jsonl` (`channel_ready`), `claude-debug.log` |
 | Routing, native identity/tool observations, work gates, scores, and hold boundaries | `events.jsonl` |
 | Grok catalog queries, normalized proof calls, and original `wire_tool`/`wire_arguments` | `events.jsonl` (`native_discovery`, `native_tool`) |
 | Native requests, responses, notifications, launch details, timeouts, and exceptions | `codex-trace.jsonl`, `grok-trace.jsonl` |
@@ -376,6 +430,8 @@ Interpret results within the experiment's measured boundaries:
 | Executable missing | Check `PATH`, run `doctor`, or use `agent --binary`. |
 | Codex schema unsupported or unverified | Inspect `doctor` output; this installed binary must expose `TurnStartParams.toolOutput`. |
 | Claude never becomes ready | Inspect `/mcp`, channel confirmation, native hook execution, and account/organization channel availability. |
+| Waiting for Claude channel handler registration | Inspect `claude-debug.log` for the exact `coord_proof` registration marker. Missing or changed diagnostic output is not assumed ready. |
+| Startup appears idle | Read the relay's per-peer missing conditions or `report.json.startup` after it stops. Registration, notification submission, and verified receipt are separate conditions. |
 | Grok never becomes ready | Check its terminal for proof-tool permission prompts, confirm xAI Grok Build supports `agent stdio`, and inspect authentication and logs. |
 | v0.3.0 rejects Grok `search_tool` during startup | Update to v0.3.1 or later and use a fresh run directory. MCP catalog discovery is now recorded separately from proof execution. |
 | Panes exit, then Claude hooks report connection refused | Read the relay's `report.json.detail` first. A stopped relay can cause later hook failures; pane exit status does not establish a pass. |
