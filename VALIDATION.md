@@ -4,7 +4,7 @@ Date: 2026-09-19. Runtime: Python 3.12, Linux.
 
 ## Verified locally
 
-- **54 tests passed** for version 0.3 in 202.594 seconds. This includes 18
+- **69 tests passed** for version 0.3.1 in 141.913 seconds. This includes 21
   process-level behavior scenarios, configurable experiments, and the existing
   unit/integration checks.
 - The integration test runs the actual relay, adapters, MCP server, and verifier
@@ -39,11 +39,18 @@ Date: 2026-09-19. Runtime: Python 3.12, Linux.
 
 ## Behavior and experiment coverage
 
-- The 18 mocked process scenarios cover successful delayed/duplicate delivery,
+- The 21 mocked process scenarios cover successful delayed/duplicate delivery,
   display-title changes, dropped handling, wrong context, stale nonces, missing
   native observations/hooks/completion, changed sessions, unsupported methods,
   denied permissions, process crashes, malformed stdout, incorrect work, reused
   call IDs, forbidden tools, and operator interruption.
+- Grok discovery coverage uses the pinned source's `search_tool` query/limit
+  schema and `use_tool` tool_name/tool_input wrapper. A mocked catalog search
+  invokes the actual MCP `tools/list`; every subsequent proof execution is
+  wrapped. Discovery alone cannot cover a missing native ready call, and an
+  unrelated MCP target invalidates the run. Unit checks reject malformed
+  wrappers, unknown metadata versions, contradictory identities, and call-ID
+  reuse across discovery and proof execution. Original wire inputs are retained.
 - The runner asserts specific failure evidence, preserves earlier passes, and
   marks expected failures as matched tests with **unverified proof reports**.
   Reports, process output, exit codes, fault records, and native/MCP traces remain
@@ -66,6 +73,24 @@ Reproduce with `bash scripts/test.sh`, `bash scripts/behavior.sh --dir runs/mock
 or `bash scripts/experiment.sh proof.mock.example.json`. Details and boundaries
 are in [TESTING.md](TESTING.md) and [EXPERIMENTS.md](EXPERIMENTS.md).
 
+## Reported live startup failure and scoped fix
+
+A user-supplied v0.3.0 report from 2026-09-19 records Grok 1.0.30 calling native
+`search_tool` during readiness. The adapter rejected its identity as outside
+the proof MCP namespace, and the controller stopped before any of nine selected
+message cases ran. Subsequent Claude hook connection errors followed relay
+shutdown. Native session registration and the Codex toolOutput probe had succeeded;
+this run establishes neither working nor broken cross-harness messaging.
+
+Version 0.3.1 recognizes Grok catalog discovery separately and normalizes only
+exact proof MCP targets from `use_tool`. The discovery and dispatch schemas were
+reviewed at public source commit `482711333c7195dc16a272777f86086d615e2afb`.
+The installed binary's `04b7ffed98c6` revision could not be resolved in the public
+repository, so that source review is not a verification of the exact installed
+build. The supplied report has no raw discovery arguments; a fresh live run
+must establish compatibility with its actual notifications. No patched live pass
+has been observed.
+
 ## Still requires a local live run
 
 Codex, Claude Code, and Grok Build executables were all absent here. No real
@@ -82,6 +107,6 @@ MCP readiness alone is not a pass. Grok permission-rule flags remain unapplied;
 the adapter retains serialized human approval. The MCP server implements only
 protocol version 2025-06-18; clients must accept that negotiated version.
 
-The first live run should produce its own `report.json`, `events.jsonl`, native
+Each live run should produce its own `report.json`, `events.jsonl`, native
 traces, and a diagnostic ZIP if needed. Preserve that evidence before changing
 an adapter. Do not treat this file or fixture-test output as live proof.

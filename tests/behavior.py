@@ -20,6 +20,9 @@ SCENARIOS = {
     "happy": ("pass", True, "Full coordination and work with later-turn delivery"),
     "delayed-duplicate": ("pass", True, "Late native evidence and duplicate observations/completions"),
     "prose-title": ("pass", False, "Human-facing Grok titles with canonical tool identity"),
+    "grok-discovery": ("pass", True, "Grok discovers the MCP catalog then dispatches every proof tool via use_tool"),
+    "grok-discovery-only": ("unverified", False, "Grok catalog discovery cannot cover an unobserved ready tool call"),
+    "grok-wrong-dispatch": ("unverified", False, "Grok use_tool targets an unrelated MCP server"),
     "queued-only": ("unverified", False, "Accepted messages never handled"),
     "wrong-memory": ("unverified", False, "Reply carries the wrong private memory"),
     "stale-nonce": ("unverified", False, "Reply reuses an old challenge nonce"),
@@ -60,7 +63,7 @@ def assess(scenario, report, events, settings=None):
         require(audit.get("status") == "pass", "Tool audit did not pass")
         require(len(report.get("work", [])) == (3 if work else 0) and
                 all(w["status"] == "pass" for w in report.get("work", [])), "Incomplete work scores")
-    elif scenario not in {"missing-hook", "missing-completion"} and not settings:
+    elif scenario not in {"missing-hook", "missing-completion", "grok-discovery-only"} and not settings:
         require(any(c["status"] == "pass" for c in cases), "Earlier successful evidence was not preserved")
     if expected != "pass" and scenario != "incorrect-work":
         require(not report.get("work"), "Failure should stop before the work stage")
@@ -69,9 +72,9 @@ def assess(scenario, report, events, settings=None):
     if scenario in {"queued-only", "wrong-memory", "stale-nonce", "missing-native", "reused-call-id"}:
         require(bool(cases) and cases[-1]["status"] == "unverified", "Affected message case must remain unverified")
         require("verification_timeout" in kinds, "Missing timeout decision telemetry")
-    if scenario in {"missing-native", "missing-hook"}:
+    if scenario in {"missing-native", "missing-hook", "grok-discovery-only"}:
         require(audit.get("unmatched_relay_calls", 0) > 0, "Native evidence gap was not audited")
-    if scenario in {"missing-hook", "missing-completion"}:
+    if scenario in {"missing-hook", "missing-completion", "grok-discovery-only"}:
         require(not cases, "Unready harnesses must not start message cases")
     if scenario == "session-drift":
         require("native_identity_error" in kinds, "Missing native identity failure")
@@ -89,7 +92,7 @@ def assess(scenario, report, events, settings=None):
         require(any(w["status"] == "incorrect" for w in report.get("work", [])), "Wrong answer was not scored incorrect")
     if scenario == "reused-call-id":
         require(bool(audit.get("conflicting_call_seqs")), "Conflicting native call IDs were not audited")
-    if scenario == "extra-tool":
+    if scenario in {"extra-tool", "grok-wrong-dispatch"}:
         require("tool_violation" in kinds and audit.get("status") == "unverified", "Extra tool must invalidate audit")
     if scenario == "interrupted":
         require(report.get("detail") == "Interrupted by operator", "Operator interruption must be explicit")
@@ -97,6 +100,19 @@ def assess(scenario, report, events, settings=None):
     if scenario == "prose-title":
         require(any(e["event"] == "native_tool" and e["peer"] == "grok" and
                     e.get("identity_basis") == "x.ai/tool v1" for e in events), "Canonical identity not exercised")
+    if scenario in {"grok-discovery", "grok-discovery-only", "grok-wrong-dispatch"}:
+        require(audit.get("native_discovery_calls") == 1, "Catalog discovery must be counted separately")
+        require(any(e["event"] == "native_discovery" and e.get("tool") == "search_tool" and
+                    e.get("arguments", {}).get("query") == "coord_proof" for e in events),
+                "Missing discovery arguments in telemetry")
+        native = [e for e in events if e["event"] == "native_tool" and e["peer"] == "grok"]
+        if scenario == "grok-discovery-only":
+            require(not native, "Discovery must not create native proof evidence")
+        else:
+            require(bool(native) and all(e.get("wire_tool") == "use_tool" and
+                    e.get("wire_arguments") == {"tool_name": "coord_proof__" + e["tool"],
+                                                "tool_input": e["arguments"]} for e in native),
+                    "Wrapped dispatch must preserve exact outer and inner arguments")
     if scenario == "delayed-duplicate":
         require(any(c.get("timing", {}).get("challenge_ack_after_reply") or
                     c.get("timing", {}).get("reply_ack_after_receipt") for c in cases), "Late RPC acknowledgement not exercised")

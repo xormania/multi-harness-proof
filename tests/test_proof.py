@@ -17,7 +17,7 @@ from urllib.error import HTTPError
 from mhproof.adapters import Codex, Grok
 from mhproof.contract import validate_tool
 from mhproof.compat import supports_tool_output
-from mhproof.evidence import claude_hook, grok_tool_identity, tool_audit
+from mhproof.evidence import claude_hook, grok_tool_identity, grok_tool_observation, tool_audit
 from mhproof.relay import Client, State, serve, write_json
 from mhproof.rpc import RPC, RPCError
 from mhproof.suite import Suite, case_diagnostics, case_evidence
@@ -299,6 +299,37 @@ class VerifierTests(unittest.TestCase):
         self.assertIsNone(self.check([*events, conflict], sessions))
         self.assertEqual(tool_audit([*events, conflict], sessions)["conflicting_call_seqs"], [99])
 
+    def test_discovery_cannot_replace_native_proof_evidence(self):
+        events, sessions = self.fixture()
+        observed = events[-2]
+        events.append({"event": "tool_called", "peer": "grok", "tool": observed["tool"],
+                       "arguments": observed["arguments"], "seq": 10})
+        observed.update(event="native_discovery", tool="search_tool", arguments={"query": "coord_proof"})
+        self.assertIsNone(self.check(events, sessions))
+        audit = tool_audit(events, sessions)
+        self.assertEqual(audit["status"], "unverified")
+        self.assertEqual(audit["native_discovery_calls"], 1)
+        self.assertEqual(audit["unmatched_relay_calls"], 1)
+
+    def test_discovery_call_id_cannot_be_reused_as_proof_evidence(self):
+        events, sessions = self.fixture()
+        discovery = {**events[-2], "event": "native_discovery", "tool": "search_tool",
+                     "arguments": {"query": "coord_proof"}, "seq": 99}
+        for ordered in ([*events, discovery], [discovery, *events]):
+            with self.subTest(discovery_first=ordered[0] is discovery):
+                self.assertIsNone(self.check(ordered, sessions))
+                self.assertTrue(tool_audit(ordered, sessions)["conflicting_call_seqs"])
+
+    def test_changed_outer_dispatch_arguments_conflict_even_with_same_inner_call(self):
+        events, sessions = self.fixture()
+        observed = events[-2]
+        observed.update(wire_tool="use_tool", wire_arguments={
+            "tool_name": "coord_proof__" + observed["tool"], "tool_input": observed["arguments"]})
+        conflict = {**observed, "wire_arguments": {"tool_name": "other_server__proof_send",
+                    "tool_input": observed["arguments"]}, "seq": 99}
+        self.assertIsNone(self.check([*events, conflict], sessions))
+        self.assertEqual(tool_audit([*events, conflict], sessions)["conflicting_call_seqs"], [99])
+
     def test_grok_identity_prefers_versioned_metadata_and_never_guesses_prose(self):
         meta = {"version": 1, "name": "coord_proof__proof_send", "namespace": "mcp"}
         packet = {"title": "Send the reply", "_meta": {"x.ai/tool": meta}}
@@ -317,6 +348,83 @@ class VerifierTests(unittest.TestCase):
         old["definitions"]["TurnStartParams"]["properties"]["toolOutput"] = {}
         self.assertTrue(supports_tool_output([old]))
         self.assertIsNone(supports_tool_output([{"properties": {"toolOutput": {}}}]))
+
+
+class GrokToolContractTests(unittest.TestCase):
+    @staticmethod
+    def packet(name, args, canonical=True):
+        update = {"sessionUpdate": "tool_call", "toolCallId": "call", "title": name, "rawInput": args}
+        if canonical:
+            update["_meta"] = {"x.ai/tool": {"version": 1, "name": name,
+                "namespace": "grok_build", "kind": name, "read_only": False}}
+        return update
+
+    def test_catalog_discovery_with_canonical_or_exact_title_identity(self):
+        for canonical in (True, False):
+            for args in ({"query": "coord_proof"}, {"query": "proof tools", "limit": 5},
+                         {"query": "coord_proof", "limit": None}):
+                with self.subTest(canonical=canonical, args=args):
+                    observation = grok_tool_observation(self.packet("search_tool", args, canonical))
+                    self.assertEqual(observation["event"], "native_discovery")
+                    self.assertEqual(observation["arguments"], args)
+                    self.assertEqual(observation["wire_tool"], "search_tool")
+
+    def test_discovery_rejects_malformed_inputs(self):
+        for args in (None, [], {}, {"query": 1}, {"query": "coord_proof", "url": "unexpected"},
+                     {"query": "coord_proof", "limit": True}, {"query": "coord_proof", "limit": -1},
+                     {"query": "coord_proof", "limit": 256}):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                grok_tool_observation(self.packet("search_tool", args))
+
+    def test_dispatch_preserves_wire_input_and_ignores_metadata_projection(self):
+        args = {"tool_name": "coord_proof__proof_hold", "tool_input": {"case_id": "case"}}
+        for canonical in (True, False):
+            update = self.packet("use_tool", args, canonical)
+            if canonical:
+                update["title"] = "Hold for a coordination message"
+                update["_meta"]["x.ai/tool"]["input"] = {"case_id": "display-only"}
+            observation = grok_tool_observation(update)
+            self.assertEqual(observation["event"], "native_tool")
+            self.assertEqual(observation["tool"], "proof_hold")
+            self.assertEqual(observation["arguments"], {"case_id": "case"})
+            self.assertEqual(observation["wire_tool"], "use_tool")
+            self.assertEqual(observation["wire_arguments"], args)
+
+    def test_dispatch_rejects_unqualified_other_server_and_nonproof_targets(self):
+        for target in ("proof_hold", "mcp__coord_proof__proof_hold", "other_server__proof_hold",
+                       "coord_proof__read_file", "coord_proof__proof_unknown", "read_file", "use_tool", None, {}):
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                grok_tool_observation(self.packet("use_tool", {"tool_name": target,
+                    "tool_input": {"case_id": "case"}}))
+
+    def test_dispatch_requires_actual_schema_valid_object_arguments(self):
+        for args in (None, {}, {"tool_name": "coord_proof__proof_hold"},
+                     {"tool_name": "coord_proof__proof_hold", "tool_input": '{"case_id":"case"}'},
+                     {"tool_name": "coord_proof__proof_hold", "tool_input": {}},
+                     {"tool_name": "coord_proof__proof_hold", "tool_input": {"case_id": 2}},
+                     {"tool_name": "coord_proof__proof_hold", "tool_input": {"case_id": "case"}, "extra": True}):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                grok_tool_observation(self.packet("use_tool", args))
+
+    def test_machinery_metadata_and_exact_titles_must_agree(self):
+        for name, args in (("search_tool", {"query": "coord_proof"}),
+                           ("use_tool", {"tool_name": "coord_proof__proof_work_next", "tool_input": {}})):
+            for change in ({"namespace": "mcp"}, {"namespace": "other"}, {"version": 2}, {"version": True}):
+                update = self.packet(name, args)
+                update["_meta"]["x.ai/tool"].update(change)
+                with self.subTest(name=name, change=change), self.assertRaises(ValueError):
+                    grok_tool_observation(update)
+            for title in ({"search_tool", "use_tool", "coord_proof__proof_hold"} - {name}):
+                update = self.packet(name, args)
+                update["title"] = title
+                with self.subTest(name=name, title=title), self.assertRaises(ValueError):
+                    grok_tool_observation(update)
+
+    def test_no_prose_guessing_or_other_builtin_exception(self):
+        for name in ("Search for proof tools", "read_file", "web_search", "run_shell_command"):
+            for canonical in (True, False):
+                with self.subTest(name=name, canonical=canonical), self.assertRaises(ValueError):
+                    grok_tool_observation(self.packet(name, {"query": "coord_proof"}, canonical))
 
 
 class AdapterEvidenceTests(unittest.IsolatedAsyncioTestCase):
@@ -369,6 +477,43 @@ class AdapterEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.adapter.busy)
         self.assertEqual(self.events[-1]["state"], "unknown")
         self.assertFalse(any(e["event"] == "turn_completed" for e in self.events))
+
+    async def test_grok_discovery_keeps_delivery_pending_then_wrapped_reply_clears_it(self):
+        self.adapter.busy = self.adapter.native_busy = True
+        await self.adapter.deliver(self.message())
+        await self.completion("old-turn")
+        search = GrokToolContractTests.packet("search_tool", {"query": "coord_proof"})
+        await self.adapter.notification("session/update", {"sessionId": "native-session", "update": search})
+        self.assertEqual(len(self.adapter.pending_interjections), 1)
+        self.assertTrue(any(e["event"] == "native_discovery" for e in self.events))
+        self.assertFalse(any(e["event"] in {"native_tool", "tool_violation"} for e in self.events))
+        args = {"to": "codex", "case_id": "case", "kind": "reply", "nonce": "nonce", "memory": "secret"}
+        update = GrokToolContractTests.packet("use_tool", {"tool_name": "coord_proof__proof_send", "tool_input": args})
+        update["toolCallId"] = "wrapped-reply"
+        await self.adapter.notification("session/update", {"sessionId": "native-session", "update": update})
+        self.assertFalse(self.adapter.pending_interjections)
+        observed = next(e for e in self.events if e["event"] == "native_tool")
+        self.assertEqual(observed["arguments"], args)
+        self.assertEqual(observed["wire_arguments"], update["rawInput"])
+        self.assertTrue(self.adapter.busy)
+        await self.completion("fallback-turn")
+        self.assertFalse(self.adapter.busy)
+        called = {"event": "tool_called", "seq": len(self.events) + 1, "tool": "proof_send", "arguments": args}
+        audit = tool_audit([{**e, "peer": "grok"} for e in [*self.events, called]],
+                           {"grok": {"session_id": "native-session"}})
+        self.assertEqual(audit["status"], "pass")
+        self.assertEqual(audit["native_discovery_calls"], 1)
+        self.assertEqual(audit["native_tool_calls"], 1)
+
+    async def test_grok_invalid_dispatch_is_violation_without_proof_evidence(self):
+        self.adapter.busy = self.adapter.native_busy = True
+        await self.adapter.deliver(self.message())
+        update = GrokToolContractTests.packet("use_tool", {"tool_name": "other_server__proof_send", "tool_input": {
+            "to": "codex", "case_id": "case", "kind": "reply", "nonce": "nonce", "memory": "secret"}})
+        await self.adapter.notification("session/update", {"sessionId": "native-session", "update": update})
+        self.assertTrue(self.adapter.pending_interjections)
+        self.assertFalse(any(e["event"] == "native_tool" for e in self.events))
+        self.assertEqual(self.events[-1]["event"], "tool_violation")
 
     async def test_grok_rpc_response_without_native_completion_does_not_prove_idle(self):
         self.adapter.prompts_in_flight = 1

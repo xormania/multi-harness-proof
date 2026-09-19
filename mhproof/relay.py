@@ -153,7 +153,7 @@ def serve(state):
                     allowed = {"submitted", "delivery_error", "unsupported", "adapter_error",
                                "mcp_ready", "turn_started", "turn_completed", "permission_denied",
                                "permission_requested", "permission_resolved",
-                               "session_observed", "adapter_stopped", "native_session", "native_tool",
+                               "session_observed", "adapter_stopped", "native_session", "native_tool", "native_discovery",
                                "native_identity_error", "activity", "tool_violation", "protocol_capability"}
                     event = body.pop("event")
                     if event not in allowed or set(body) & {"peer", "session_id", "registered_session_id", "seq", "time"}:

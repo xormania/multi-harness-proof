@@ -4,6 +4,12 @@ import json
 PEERS = ("codex", "claude", "grok")
 INSTRUCTIONS = """You are participating in a local multi-harness messaging experiment.
 Use only the proof_* tools (possibly with an MCP prefix).
+For Grok's MCP interface, search_tool may discover the coord_proof catalog
+(query="coord_proof"). Then use_tool may invoke only coord_proof__proof_send,
+coord_proof__proof_report, coord_proof__proof_hold, coord_proof__proof_work_next,
+or coord_proof__proof_work_submit. Set tool_name to that exact qualified name
+and tool_input to the proof tool's JSON arguments object. Discovery is not a
+proof action. Never put PRIVATE_MEMORY or message contents in a search query.
 Do not use shell, file, web, delegation, or configuration tools. Do not create
 other agents. Do not inspect the run directory. Keep responses short.
 The controller will give you a PRIVATE_MEMORY value once. Remember it within

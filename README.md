@@ -10,9 +10,10 @@ participant stays in one native session throughout the experiment.
 The output is evidence: message traces, verified replies, scored work, and
 diagnostics that explain what succeeded or failed on a particular installation.
 
-> **Experimental:** version 0.3 includes 18 mocked end-to-end behavior scenarios
-> and configurable coordination experiments. Live compatibility and actual
-> model behavior remain unverified. See [validation status](VALIDATION.md).
+> **Experimental:** version 0.3.1 includes 21 mocked end-to-end behavior scenarios
+> and configurable coordination experiments. It fixes a reported live startup
+> rejection of Grok's MCP discovery tool; a complete live pass remains unverified.
+> See [validation status](VALIDATION.md).
 
 ## What gets tested
 
@@ -65,7 +66,7 @@ still need to be checked during a live run.
 ### Explore failures offline
 
 ```bash
-# Keep the reports and telemetry from all 18 predefined behavior scenarios.
+# Keep the reports and telemetry from all 21 predefined behavior scenarios.
 bash scripts/behavior.sh --dir runs/mock1
 
 # Configure message pairs, bursts, delays, and dropped messages; preserve each run.
@@ -101,6 +102,13 @@ check Grok's window for any permission prompts for the proof tools.
 The experiment starts automatically when all participants and tools are ready.
 Watch the relay window for results and the run directory. The helper changes
 settings only for the tmux session/windows it creates.
+
+`session launched` means a native session exists; proof readiness still requires
+the agent's verified ready report. `Pane is dead (status 0)` is a wrapper exit,
+not a proof result. Read `report.json` or the relay window for the verdict.
+After a failed run, close Claude with `/exit`, detach with `Ctrl-b d`, update
+with `git pull --ff-only`, and retry using a fresh directory. Keep the failed
+run's evidence.
 
 #### Launch in separate terminals
 
@@ -181,7 +189,15 @@ Startup requires a ready report with the channel-delivered memory marker and a
 matching native tool observation; an MCP connection alone is insufficient.
 Grok prefers versioned `x.ai/tool` wire-name metadata, with exact ACP tool titles
 as a fallback when that metadata is absent. Unknown versions, conflicting names,
-and non-proof identities stop verification; display prose alone is insufficient.
+and unrelated tools stop verification; display prose alone is insufficient.
+
+Grok can expose MCP tools through two native helpers. `search_tool` searches the
+tool catalog and is recorded as `native_discovery`, never proof evidence.
+`use_tool` is accepted only when `tool_name` is exactly one of the five
+`coord_proof__proof_*` tools and `tool_input` is a valid proof arguments object.
+The adapter matches that inner call to the actual MCP execution while preserving
+the outer wire name and arguments. Other MCP servers and built-in tools remain
+outside the proof. Neither helper changes the permission policy.
 
 ## Results and diagnostics
 
@@ -223,8 +239,11 @@ tool observations. The report's `evidence_last_seq` identifies its verdict snaps
 The overall verdict also requires `tool_audit.status` to pass: each relay tool
 call must have a matching native observation, with distinct native call IDs.
 Reusing a call ID with different arguments or identity invalidates the audit;
-identical repeated observations cannot cover additional calls.
-Observed use of non-proof tools invalidates the run, including automatically
+identical repeated observations cannot cover additional calls. Discovery calls
+are counted separately as `native_discovery_calls`; they cannot cover relay calls,
+and reusing a discovery call ID for proof execution invalidates the audit.
+Apart from Grok's scoped MCP discovery/dispatch helpers, observed use of
+non-proof tools invalidates the run, including automatically
 allowed Codex read commands. This detects violations of the cooperative test;
 it is not an operating-system access boundary.
 
@@ -234,6 +253,7 @@ Local telemetry is enabled for every run:
 | --- | --- |
 | Verdicts, session IDs, settings, capability probes, stage, timings, and tool audit | `report.json` |
 | Routing, native identity/tool observations, work gates, scores, and hold boundaries | `events.jsonl` |
+| Grok catalog queries, normalized proof calls, and original `wire_tool`/`wire_arguments` | `events.jsonl` (`native_discovery`, `native_tool`) |
 | Native requests, responses, notifications, launch details, timeouts, and exceptions | `codex-trace.jsonl`, `grok-trace.jsonl` |
 | MCP calls, tool arguments/results, and channel notifications | `mcp-claude-trace.jsonl`, `mcp-grok-trace.jsonl` |
 | Harness diagnostics | `codex-stderr.log`, `grok-stderr.log`, `claude-trace.jsonl`, `claude-debug.log` |
@@ -322,7 +342,9 @@ permission-bypass modes. Claude's development-channel flag enables a custom
 channel subject to native confirmation. Claude's built-in tools are disabled,
 Codex uses a read-only sandbox and declines approval requests, and Grok retains
 native permission prompts. Claude's run-local hook rejects non-proof tools;
-Codex and Grok tool observations invalidate the proof if other tools appear.
+Codex and Grok tool observations invalidate the proof if unrelated tools appear.
+The Grok adapter recognizes catalog discovery and exact proof MCP dispatch as
+described above; that exception supplies no proof evidence for discovery itself.
 Grok's built-in tools are not stripped by this launcher. Scoped Grok allow rules
 have not been adopted without verifying their behavior under `agent stdio`.
 
@@ -355,6 +377,8 @@ Interpret results within the experiment's measured boundaries:
 | Codex schema unsupported or unverified | Inspect `doctor` output; this installed binary must expose `TurnStartParams.toolOutput`. |
 | Claude never becomes ready | Inspect `/mcp`, channel confirmation, native hook execution, and account/organization channel availability. |
 | Grok never becomes ready | Check its terminal for proof-tool permission prompts, confirm xAI Grok Build supports `agent stdio`, and inspect authentication and logs. |
+| v0.3.0 rejects Grok `search_tool` during startup | Update to v0.3.1 or later and use a fresh run directory. MCP catalog discovery is now recorded separately from proof execution. |
+| Panes exit, then Claude hooks report connection refused | Read the relay's `report.json.detail` first. A stopped relay can cause later hook failures; pane exit status does not establish a pass. |
 | Native method or tool missing | Compare the installed CLI with the interface references below. Preserve the failed run. |
 | Message queued without a pass | Follow its ID through submission, reply, and receipt events. |
 | Native evidence missing | Inspect `native_tool` events and IDs; MCP readiness and relay registration cannot substitute for native observations. |
@@ -390,6 +414,8 @@ Interfaces reviewed for the initial implementation on **2026-09-19**:
 - [Grok native completion signals at the reviewed commit](https://github.com/xai-org/grok-build/blob/482711333c7195dc16a272777f86086d615e2afb/crates/codegen/xai-grok-shell/src/session/turn_completion.rs)
 - [Grok initial tool notifications](https://github.com/xai-org/grok-build/blob/482711333c7195dc16a272777f86086d615e2afb/crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs)
 - [Grok canonical tool metadata contract](https://github.com/xai-org/grok-build/blob/482711333c7195dc16a272777f86086d615e2afb/crates/codegen/xai-grok-tools/schema/tool_meta.schema.json)
+- [Grok MCP catalog discovery schema](https://github.com/xai-org/grok-build/blob/482711333c7195dc16a272777f86086d615e2afb/crates/codegen/xai-grok-tools/src/implementations/search_tool/types.rs)
+- [Grok MCP dispatch schema and implementation](https://github.com/xai-org/grok-build/blob/482711333c7195dc16a272777f86086d615e2afb/crates/codegen/xai-grok-tools/src/implementations/use_tool/mod.rs)
 - [ACP session and MCP setup](https://agentclientprotocol.com/protocol/v1/session-setup)
 
 ## License

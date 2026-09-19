@@ -9,7 +9,7 @@ Only a separate live run can establish that installed native harnesses coordinat
 bash scripts/test.sh
 ```
 
-This includes unit/integration tests and all 18 process-level behavior scenarios
+This includes unit/integration tests and all 21 process-level behavior scenarios
 in temporary directories. It requires Python 3.10+ on Linux, macOS, or WSL, with
 no installed vendor CLIs, login, model calls, or third-party packages.
 
@@ -46,6 +46,9 @@ competence nor vendor compatibility.
 | `happy` | `pass` | All 15 default messages, three work scores, original native IDs, counted tool audit |
 | `delayed-duplicate` | `pass` | Late RPC acknowledgements/native observations; duplicate observations do not add calls |
 | `prose-title` | `pass` | Grok display text changes while canonical tool identity remains exact |
+| `grok-discovery` | `pass` | Native catalog search plus actual MCP `tools/list`, followed by wrapped `use_tool` calls through all 15 messages and three work scores |
+| `grok-discovery-only` | `unverified` | Discovery cannot cover a ready report whose native execution observation is missing; no message cases start |
+| `grok-wrong-dispatch` | `unverified` | Wrapped dispatch to another MCP server invalidates the audit; the fake never invokes that server |
 | `queued-only` | `unverified` | Submission without handling cannot pass |
 | `wrong-memory` | `unverified` | Correct routing cannot compensate for forgotten context |
 | `stale-nonce` | `unverified` | A reply to an earlier challenge cannot satisfy the current case |
@@ -88,6 +91,9 @@ Timeout events retain per-peer activity and the tool audit. Incomplete cases hav
 memory comparisons, and native-tool sequences. Grok permission telemetry records
 queue delay, total wait, and the decision. Native RPC traces retain protocol
 requests, responses, notifications, stderr, timeouts, and malformed lines.
+Grok catalog searches have separate `native_discovery` events and audit counts.
+Wrapped proof observations retain `wire_tool` and `wire_arguments` alongside the
+normalized inner tool and arguments. Discovery never fills a native-evidence gap.
 
 `report.json.evidence_last_seq` marks the verdict snapshot; shutdown can append
 later events. Acknowledgement can arrive after the model has already replied.

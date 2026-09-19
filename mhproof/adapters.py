@@ -14,7 +14,7 @@ import uuid
 from . import VERSION
 from .contract import INSTRUCTIONS, TOOLS, render
 from .compat import codex_capability
-from .evidence import grok_tool_identity, proof_name
+from .evidence import grok_tool_observation, proof_name
 from .relay import Client, write_json
 from .rpc import RPC, RPCError
 from .telemetry import Trace
@@ -62,7 +62,8 @@ class Native:
             raise ValueError("Native session identity missing or changed: " + origin)
         await self.event("native_session", native_id=native_id, origin=origin)
 
-    async def observe_tool(self, name, arguments, call_id, native_id, origin, turn_id=None, identity_basis=None):
+    async def observe_tool(self, name, arguments, call_id, native_id, origin, turn_id=None, identity_basis=None,
+                           wire_tool=None, wire_arguments=None):
         await self.observe_session(native_id, origin)
         wire_name = name
         name = proof_name(name)
@@ -70,8 +71,9 @@ class Native:
             await self.event("tool_violation", native_id=native_id, origin=origin, call_id=call_id,
                              tool=wire_name, detail="Native tool is not an exact proof tool name")
             return False
+        wire = {"wire_tool": wire_tool, "wire_arguments": wire_arguments} if wire_tool is not None else {}
         await self.event("native_tool", native_id=native_id, origin=origin, call_id=call_id,
-                         tool=name, arguments=arguments, turn_id=turn_id, identity_basis=identity_basis)
+                         tool=name, arguments=arguments, turn_id=turn_id, identity_basis=identity_basis, **wire)
         return True
 
     async def register(self, transport):
@@ -101,10 +103,12 @@ class Native:
     async def run(self):
         try:
             await self.start()
-            print(self.peer + " ready; native session " + self.session, flush=True)
+            print(self.peer + " session launched; awaiting proof readiness; native session " + self.session, flush=True)
             while not self.rpc.dead.is_set():
                 polled = await asyncio.to_thread(self.client.post, "/poll", {})
                 if polled["stopped"]:
+                    print("Relay stopped. Proof verdict: " + str(self.directory / "report.json") +
+                          " (pane exit status is not the verdict).", flush=True)
                     return
                 if polled["message"]:
                     msg = polled["message"]
@@ -339,14 +343,21 @@ class Grok(Native):
                 self.native_busy = True
             if kind == "tool_call":
                 try:
-                    wire_name, basis = grok_tool_identity(update)
+                    observation = grok_tool_observation(update)
                 except ValueError as error:
                     await self.event("tool_violation", native_id=params["sessionId"],
                                      call_id=update.get("toolCallId"), tool=update.get("title"), detail=str(error))
                     return
-                name, arguments = proof_name(wire_name), update.get("rawInput")
-                await self.observe_tool(wire_name, arguments, update.get("toolCallId"),
-                                        params["sessionId"], "grok/session/update", identity_basis=basis)
+                name, arguments = observation["tool"], observation["arguments"]
+                if observation.pop("event") == "native_discovery":
+                    await self.event("native_discovery", native_id=params["sessionId"],
+                                     call_id=update.get("toolCallId"), origin="grok/session/update", **observation)
+                    await self.activity("native MCP catalog discovery; not proof handling")
+                    return
+                await self.observe_tool(name, arguments, update.get("toolCallId"),
+                                        params["sessionId"], "grok/session/update",
+                                        identity_basis=observation["identity_basis"],
+                                        wire_tool=observation["wire_tool"], wire_arguments=observation["wire_arguments"])
                 for ident, msg in list(self.pending_interjections.items()):
                     args = arguments if isinstance(arguments, dict) else {}
                     matches = (msg["kind"] == "challenge" and name == "proof_send" and args.get("kind") == "reply" or

@@ -62,6 +62,7 @@ class Fake:
         self.child = None
         self.scenario = os.environ.get("MHPROOF_FAKE_SCENARIO", "happy")
         self.first_call_id = None
+        self.discovered_proof_tools = False
         self.rules = json.loads(os.environ.get("MHPROOF_FAKE_RULES", "[]"))
         self.rule_hits = [0] * len(self.rules)
         threading.Thread(target=self.work, daemon=True).start()
@@ -101,6 +102,21 @@ class Fake:
         else:
             if self.mode == "grok":
                 is_reply = name == "proof_send" and args.get("kind") == "reply"
+                wrapped = self.scenario in {"grok-discovery", "grok-discovery-only", "grok-wrong-dispatch"}
+                if wrapped and not self.discovered_proof_tools:
+                    discovery_id = uuid.uuid4().hex
+                    self.wire.send({"method": "session/update", "params": {"sessionId": self.session,
+                        "update": {"sessionUpdate": "tool_call", "toolCallId": discovery_id,
+                                   "title": "search_tool", "rawInput": {"query": "coord_proof", "limit": 5},
+                                   "_meta": {"x.ai/tool": {"version": 1, "name": "search_tool",
+                                       "namespace": "grok_build", "kind": "search_tool", "read_only": False}}}}})
+                    catalog = self.mcp.call("tools/list", {})
+                    assert name in {tool["name"] for tool in catalog["tools"]}
+                    self.wire.send({"method": "session/update", "params": {"sessionId": self.session,
+                        "update": {"sessionUpdate": "tool_call_update", "toolCallId": discovery_id,
+                                   "status": "completed"}}})
+                    self.discovered_proof_tools = True
+                    self.fault("native-catalog-discovery-with-real-mcp-tools-list")
                 call_id = uuid.uuid4().hex
                 self.first_call_id = self.first_call_id or call_id
                 if is_reply and self.scenario == "reused-call-id":
@@ -112,6 +128,14 @@ class Fake:
                     "update": {"sessionUpdate": "tool_call", "toolCallId": call_id,
                                "title": "coord_proof__" + name, "rawInput": args,
                                "_meta": {"x.ai/tool": identity}}}}
+                if wrapped:
+                    target = "coord_proof__" + name
+                    if is_reply and self.scenario == "grok-wrong-dispatch":
+                        target = "other_server__" + name
+                        self.fault("wrong-mcp-target-observed-no-dispatch")
+                    identity.update(name="use_tool", namespace="grok_build", kind="use_tool")
+                    packet["params"]["update"].update(title="use_tool",
+                        rawInput={"tool_name": target, "tool_input": args})
                 if self.scenario == "prose-title":
                     packet["params"]["update"]["title"] = "Send a coordination message"
                     self.fault("prose-title-with-canonical-identity")
@@ -123,11 +147,14 @@ class Fake:
                     identity.update(name="read_file", namespace="grok_build")
                     self.fault("non-proof-tool-observed-no-file-read")
                 late = is_reply and self.scenario == "delayed-duplicate"
-                missing = is_reply and self.scenario == "missing-native"
+                missing = (is_reply and self.scenario == "missing-native" or
+                           self.scenario == "grok-discovery-only")
                 if missing:
                     self.fault("missing-native-tool-notification")
                 elif not late:
                     self.wire.send(packet)
+                if is_reply and self.scenario == "grok-wrong-dispatch":
+                    return {"denied": True}
                 if is_reply and self.scenario == "permission-denied":
                     self.fault("permission-request")
                     outcome = self.wire.call("session/request_permission", {"sessionId": self.session,
