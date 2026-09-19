@@ -7,13 +7,14 @@ command -v tmux >/dev/null || { printf 'tmux is not installed; use scripts/start
 cd -- "$proof_root"
 "$proof_python" proof.py doctor
 proof_run=${1:-"runs/$(date -u +%Y%m%dT%H%M%SZ)-$$"}
+if (($#)); then shift; fi
 proof_run=$("$proof_python" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$proof_run")
 if [[ -e "$proof_run" ]]; then
     printf 'Run directory already exists: %s\n' "$proof_run" >&2
     exit 1
 fi
 proof_session="mhproof-$(date -u +%H%M%S)-$$"
-printf -v proof_command '%q ' "$proof_python" "$proof_root/proof.py" run --dir "$proof_run"
+printf -v proof_command '%q ' "$proof_python" "$proof_root/proof.py" run --dir "$proof_run" "$@"
 tmux new-session -d -s "$proof_session" -n relay -c "$proof_root" "bash -c $(printf '%q' "$proof_command")"
 # This option applies only to the newly created session, never global tmux config.
 tmux set-option -w -t "$proof_session:relay" remain-on-exit on

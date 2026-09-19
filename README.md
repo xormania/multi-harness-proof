@@ -54,14 +54,20 @@ python3 proof.py doctor
 bash scripts/test.sh
 ```
 
-Alternatively, download the [source ZIP](downloads/multi-harness-proof.zip) and
-run the last two commands from the extracted project directory. `doctor` reports
-executable paths and versions. The tests run offline and make no model calls.
+`doctor` reports executable paths and versions. The tests run offline and make no
+model calls. Account policies and native permission prompts still need to be
+checked during a live run.
 
-### Launch with tmux
+### First run: messaging
+
+Start with `--no-work`: six round trips and three busy-delivery checks. This
+establishes messaging and context evidence before adding the work fixture.
+Choose either tmux or separate terminals below.
+
+#### Launch with tmux
 
 ```bash
-bash scripts/tmux.sh
+bash scripts/tmux.sh runs/live1 --no-work
 ```
 
 This creates a fresh run directory and a new tmux session with **relay**, **codex**,
@@ -73,16 +79,16 @@ The experiment starts automatically when all participants and tools are ready.
 Watch the relay window for results and the run directory. The helper changes
 settings only for the tmux session/windows it creates.
 
-### Launch in separate terminals
+#### Launch in separate terminals
 
 From the project directory, run each command in its own terminal:
 
 | Terminal | Command |
 | --- | --- |
-| Relay | `bash scripts/start.sh runs/first` |
-| Codex | `bash scripts/agent.sh codex runs/first` |
-| Claude | `bash scripts/agent.sh claude runs/first` |
-| Grok | `bash scripts/agent.sh grok runs/first` |
+| Relay | `bash scripts/start.sh runs/live1 --no-work` |
+| Codex | `bash scripts/agent.sh codex runs/live1` |
+| Claude | `bash scripts/agent.sh claude runs/live1` |
+| Grok | `bash scripts/agent.sh grok runs/live1` |
 
 Start the relay first. It also prints absolute-path commands for terminals opened
 elsewhere. Accept Claude's native development-channel prompt when shown, and
@@ -92,6 +98,25 @@ then travel between sessions automatically.
 **Use a fresh run directory for every attempt.** Existing runs are never
 overwritten or silently resumed. With no directory argument, `scripts/start.sh`
 chooses a new name under `runs/`.
+
+### Review, then add the work fixture
+
+Watch the relay and `runs/live1/events.jsonl` for progress. After the run ends,
+inspect `runs/live1/report.json` and preserve any diagnostics before retrying.
+Resolve incomplete messaging checks before testing work overlap.
+
+Close the first run's harness sessions, then launch the full suite in a fresh
+directory:
+
+```bash
+bash scripts/tmux.sh runs/live2
+```
+
+For separate terminals, use `bash scripts/start.sh runs/live2` and launch each
+agent with `runs/live2` in the commands above. The full suite repeats the messaging
+checks, then adds six messages during work and three work scores. A successful
+first run establishes the messaging baseline; the work stage separately tests
+answer accuracy and whether message delivery actually overlaps ongoing work.
 
 ## How coordination works
 
@@ -117,11 +142,12 @@ The proof records queueing, native submission, and model responses separately.
 For the manual example above:
 
 ```bash
-cat runs/first/report.json
-python3 proof.py bundle --dir runs/first --out first-diagnostics.zip
+cat runs/live1/report.json
+python3 proof.py bundle --dir runs/live1 --out live1-diagnostics.zip
 ```
 
-For a tmux run, substitute the directory printed by the launcher.
+Use `runs/live2` and a different bundle filename for the full run. For other run
+names, substitute the directory printed by the launcher.
 
 | Result | Meaning |
 | --- | --- |
@@ -134,6 +160,9 @@ The overall run passes only when all selected checks pass. On an incomplete
 stage, the runner preserves earlier results and reports how many message cases
 were not run. Diagnose incomplete runs using the evidence: launch errors, model
 behavior, account policy, and transport compatibility are different failure modes.
+For example, verified round trips followed by an unsupported Grok busy-delivery
+method remain useful evidence of idle messaging. They do not establish a busy
+delivery pass.
 
 Local telemetry is enabled for every run:
 
@@ -180,9 +209,9 @@ Use separate terminals for custom settings. Each command below is an alternative
 launch for its participant, not an additional participant in the same run:
 
 ```bash
-bash scripts/agent.sh claude runs/first --model sonnet --reasoning low
-bash scripts/agent.sh grok runs/first --profile existing
-bash scripts/agent.sh codex runs/first --binary /path/to/codex
+bash scripts/agent.sh claude runs/live1 --model sonnet --reasoning low
+bash scripts/agent.sh grok runs/live1 --profile existing
+bash scripts/agent.sh codex runs/live1 --binary /path/to/codex
 ```
 
 `--model` and `--reasoning` are available for all adapters. `--profile existing`
@@ -202,9 +231,18 @@ bash scripts/start.sh runs/messages --no-work
 bash scripts/start.sh runs/slow --timeout 300 --startup-timeout 900
 ```
 
+The default `--startup-timeout 600` covers participant registration and required
+MCP connections. After that, `--timeout 180` applies to individual readiness and
+verification waits; the work-completion wait allows three times that value.
+Approve native channel and proof-tool prompts promptly: a prompt that blocks the
+initial ready report is subject to the readiness wait, not a new 600-second wait.
+
 Set `PROOF_PYTHON=/path/to/python3` when using the Bash scripts to select another
 Python interpreter. The tmux helper uses all three participants and the default
-profile. See `python3 proof.py --help` for the CLI entry points.
+profile; it forwards run options such as `--no-work`, `--timeout`, and
+`--startup-timeout` after the directory argument. Use separate terminals for
+`--peers` or custom agent settings. See `python3 proof.py --help` for the CLI entry
+points.
 
 ## Configuration and limits
 
@@ -239,7 +277,7 @@ Interpret results within the experiment's measured boundaries:
 | --- | --- |
 | Executable missing | Check `PATH`, run `doctor`, or use `agent --binary`. |
 | Claude never becomes ready | Inspect `/mcp`, the channel confirmation, and account/organization channel availability. |
-| Grok never becomes ready | Confirm xAI Grok Build supports `agent stdio`, authentication is valid, and inspect its logs. |
+| Grok never becomes ready | Check its terminal for proof-tool permission prompts, confirm xAI Grok Build supports `agent stdio`, and inspect authentication and logs. |
 | Native method or tool missing | Compare the installed CLI with the interface references below. Preserve the failed run. |
 | Message queued without a pass | Follow its ID through submission, reply, and receipt events. |
 | Work answer is incorrect | Compare `work_scored` events with the fixture rules; separate answer accuracy from transport. |
