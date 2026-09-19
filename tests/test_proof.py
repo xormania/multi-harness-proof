@@ -17,10 +17,10 @@ from urllib.error import HTTPError
 from mhproof.adapters import Codex, Grok
 from mhproof.contract import validate_tool
 from mhproof.compat import supports_tool_output
-from mhproof.evidence import claude_hook, tool_audit
+from mhproof.evidence import claude_hook, grok_tool_identity, tool_audit
 from mhproof.relay import Client, State, serve, write_json
 from mhproof.rpc import RPC, RPCError
-from mhproof.suite import Suite, case_evidence
+from mhproof.suite import Suite, case_diagnostics, case_evidence
 from mhproof.telemetry import Redactor, Trace, bundle
 from mhproof.workload import expected
 
@@ -239,6 +239,16 @@ class VerifierTests(unittest.TestCase):
         for i in range(len(events)):
             self.assertIsNone(self.check(events[:i] + events[i + 1:], sessions))
 
+    def test_submission_cannot_precede_queue_but_ack_can_follow_reply(self):
+        events, sessions = self.fixture()
+        events[1]["seq"] = 0
+        self.assertIsNone(self.check(events, sessions))
+        events[1]["seq"] = 10
+        events[3]["seq"] = 11
+        result = self.check(events, sessions)
+        self.assertTrue(result["timing"]["challenge_ack_after_reply"])
+        self.assertTrue(result["timing"]["reply_ack_after_receipt"])
+
     def test_nonce_memory_and_session_must_match(self):
         for key, value in [("nonce", "stale"), ("memory", "forgotten")]:
             events, sessions = self.fixture()
@@ -247,6 +257,14 @@ class VerifierTests(unittest.TestCase):
         events, sessions = self.fixture()
         events[-2]["native_id"] = "new-session"
         self.assertIsNone(self.check(events, sessions))
+
+    def test_diagnostics_distinguish_wrong_context_from_missing_delivery(self):
+        events, _ = self.fixture()
+        events[2]["message"]["memory"] = "wrong"
+        diagnostic = case_diagnostics(events, {"source": "codex", "target": "grok", "case_id": "t", "nonce": "n"}, "secret")
+        self.assertEqual(diagnostic["challenge_submission_seqs"], [2])
+        self.assertFalse(diagnostic["reply_observations"][0]["memory_matches"])
+        self.assertTrue(diagnostic["reply_observations"][0]["nonce_matches"])
 
     def test_busy_requires_observed_overlap(self):
         events, sessions = self.fixture()
@@ -274,6 +292,24 @@ class VerifierTests(unittest.TestCase):
                   "arguments": observed["arguments"], "seq": 10}
         self.assertEqual(tool_audit([*events, called], sessions)["status"], "pass")
         self.assertEqual(tool_audit([*events, called, called, observed], sessions)["unmatched_relay_calls"], 1)
+
+    def test_conflicting_call_id_invalidates_case_and_audit(self):
+        events, sessions = self.fixture()
+        conflict = {**events[-1], "arguments": {"unexpected": "different call"}, "seq": 99}
+        self.assertIsNone(self.check([*events, conflict], sessions))
+        self.assertEqual(tool_audit([*events, conflict], sessions)["conflicting_call_seqs"], [99])
+
+    def test_grok_identity_prefers_versioned_metadata_and_never_guesses_prose(self):
+        meta = {"version": 1, "name": "coord_proof__proof_send", "namespace": "mcp"}
+        packet = {"title": "Send the reply", "_meta": {"x.ai/tool": meta}}
+        self.assertEqual(grok_tool_identity(packet)[0], "coord_proof__proof_send")
+        self.assertEqual(grok_tool_identity({"title": "coord_proof__proof_send"})[0], "coord_proof__proof_send")
+        for change in ({"version": 2}, {"version": True}, {"namespace": "grok_build"},
+                       {"name": "other_server__proof_send"}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                grok_tool_identity({**packet, "_meta": {"x.ai/tool": {**meta, **change}}})
+        with self.assertRaises(ValueError):
+            grok_tool_identity({**packet, "title": "coord_proof__proof_hold"})
 
     def test_schema_probe_rejects_missing_or_unrelated_tool_output(self):
         old = {"definitions": {"TurnStartParams": {"properties": {"input": {}, "threadId": {}}}}}
@@ -363,6 +399,15 @@ class AdapterEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(maximum, 1)
         self.assertEqual([r["outcome"]["optionId"] for r in results], ["0", "1", "2"])
 
+    async def test_permission_without_allow_once_cannot_select_allow_always(self):
+        self.adapter.permission_answer = AsyncMock(return_value="y")
+        result = await self.adapter.request("session/request_permission", {
+            "sessionId": "native-session", "toolCall": {"title": "proof tool"},
+            "options": [{"kind": "allow_always", "optionId": "persistent"}]})
+        self.adapter.permission_answer.assert_not_awaited()
+        self.assertEqual(result["outcome"]["outcome"], "cancelled")
+        self.assertEqual(self.events[-1]["event"], "permission_denied")
+
     async def test_codex_read_command_invalidates_cooperative_evidence(self):
         self.client.peer = "codex"
         codex = Codex(self.client, "unused")
@@ -402,6 +447,26 @@ class AdapterEvidenceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RPCTests(unittest.IsolatedAsyncioTestCase):
+    async def test_late_response_after_timeout_cannot_satisfy_next_request(self):
+        program = '''import sys,json,time
+first=json.loads(sys.stdin.readline())
+time.sleep(0.12)
+print(json.dumps({"id":first["id"],"result":{"which":"expired"}}),flush=True)
+second=json.loads(sys.stdin.readline())
+print(json.dumps({"id":second["id"],"result":{"which":"current"}}),flush=True)
+'''
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", program,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
+        rpc = RPC(proc, AsyncMock(), AsyncMock())
+        try:
+            with self.assertRaises(asyncio.TimeoutError):
+                await rpc.request("first", {}, timeout=0.02)
+            result = await rpc.request("second", {}, timeout=3)
+            self.assertEqual(result, {"which": "current"})
+            self.assertFalse(rpc.pending)
+        finally:
+            await rpc.close()
+
     async def test_non_json_stdout_is_a_diagnostic_protocol_failure(self):
         proc = await asyncio.create_subprocess_exec(sys.executable, "-c", "print('startup banner', flush=True)",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)

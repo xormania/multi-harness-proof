@@ -1,9 +1,10 @@
 """Deterministic protocol fixture. NOT a harness/model performance test.
 
 Speaks the native wire protocols, invokes the real relay tools, and maintains
-its own memory. Run only through test_proof.py, in temporary directories.
+its own memory. Used by test_proof.py and behavior.py; never a real harness.
 """
 import json
+import os
 from pathlib import Path
 import queue
 import re
@@ -59,7 +60,18 @@ class Fake:
         self.wire = Wire(sys.stdin, sys.stdout, self.handle)
         self.mcp = None
         self.child = None
+        self.scenario = os.environ.get("MHPROOF_FAKE_SCENARIO", "happy")
+        self.first_call_id = None
+        self.rules = json.loads(os.environ.get("MHPROOF_FAKE_RULES", "[]"))
+        self.rule_hits = [0] * len(self.rules)
         threading.Thread(target=self.work, daemon=True).start()
+
+    def fault(self, name, **fields):
+        path = os.environ.get("MHPROOF_FAKE_FAULT_LOG")
+        if path:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"time": time.time(), "peer": self.mode,
+                    "scenario": self.scenario, "fault": name, "pid": os.getpid(), **fields}) + "\n")
 
     def connect_mcp(self, command, args):
         self.child = subprocess.Popen([command, *args], stdin=subprocess.PIPE,
@@ -88,18 +100,59 @@ class Fake:
             return json.loads(result["contentItems"][0]["text"])
         else:
             if self.mode == "grok":
-                self.wire.send({"method": "session/update", "params": {"sessionId": self.session,
-                    "update": {"sessionUpdate": "tool_call", "toolCallId": uuid.uuid4().hex,
-                               "title": "coord_proof__" + name, "rawInput": args}}})
+                is_reply = name == "proof_send" and args.get("kind") == "reply"
+                call_id = uuid.uuid4().hex
+                self.first_call_id = self.first_call_id or call_id
+                if is_reply and self.scenario == "reused-call-id":
+                    call_id = self.first_call_id
+                    self.fault("reused-call-id")
+                identity = {"version": 1, "name": "coord_proof__" + name, "namespace": "mcp",
+                            "kind": "other", "label": "MCP tool", "read_only": False}
+                packet = {"method": "session/update", "params": {"sessionId": self.session,
+                    "update": {"sessionUpdate": "tool_call", "toolCallId": call_id,
+                               "title": "coord_proof__" + name, "rawInput": args,
+                               "_meta": {"x.ai/tool": identity}}}}
+                if self.scenario == "prose-title":
+                    packet["params"]["update"]["title"] = "Send a coordination message"
+                    self.fault("prose-title-with-canonical-identity")
+                if is_reply and self.scenario == "session-drift":
+                    packet["params"]["sessionId"] += "-changed"
+                    self.fault("session-drift")
+                if is_reply and self.scenario == "extra-tool":
+                    packet["params"]["update"]["title"] = "read_file"
+                    identity.update(name="read_file", namespace="grok_build")
+                    self.fault("non-proof-tool-observed-no-file-read")
+                late = is_reply and self.scenario == "delayed-duplicate"
+                missing = is_reply and self.scenario == "missing-native"
+                if missing:
+                    self.fault("missing-native-tool-notification")
+                elif not late:
+                    self.wire.send(packet)
+                if is_reply and self.scenario == "permission-denied":
+                    self.fault("permission-request")
+                    outcome = self.wire.call("session/request_permission", {"sessionId": self.session,
+                        "toolCall": {"toolCallId": call_id, "title": "coord_proof__" + name},
+                        "options": [{"kind": "allow_once", "optionId": "once"}]})
+                    if outcome["outcome"]["outcome"] != "selected":
+                        self.fault("permission-denied-no-mcp-call")
+                        return {"denied": True}
             else:
                 self.hook("PreToolUse", tool_name="mcp__coord_proof__" + name,
                           tool_input=args, tool_use_id=uuid.uuid4().hex)
             result = self.mcp.call("tools/call", {"name": name, "arguments": args})
+            if self.mode == "grok" and late:
+                time.sleep(0.08)
+                self.wire.send(packet)
+                self.wire.send(packet)
+                self.fault("late-duplicate-native-observation")
             if result.get("isError"):
                 raise RuntimeError(result)
             return json.loads(result["content"][0]["text"])
 
     def hook(self, event, **fields):
+        if event == "PreToolUse" and self.scenario == "missing-hook":
+            self.fault("missing-claude-hook")
+            return
         packet = {"session_id": self.session, "prompt_id": self.active_turn,
                   "hook_event_name": event, **fields}
         for group in self.hooks.get(event, []):
@@ -108,6 +161,27 @@ class Fake:
                                text=True, check=True, timeout=5)
 
     def react(self, msg):
+        msg = dict(msg)
+        memory_override = None
+        for index, rule in enumerate(self.rules):
+            if rule["peer"] != self.mode or rule["on"] != msg["kind"] or not msg["case_id"].startswith(rule["case_prefix"]):
+                continue
+            self.rule_hits[index] += 1
+            if not rule["occurrence"] <= self.rule_hits[index] < rule["occurrence"] + rule["times"]:
+                continue
+            action = rule["action"]
+            self.fault("configured-" + action, rule_index=index, occurrence=self.rule_hits[index],
+                       message_id=msg["id"], case_id=msg["case_id"])
+            if action == "delay":
+                time.sleep(rule["seconds"])
+            elif action == "drop":
+                return
+            elif action == "crash":
+                os._exit(72)
+            elif action == "wrong-memory":
+                memory_override = "configured-wrong-memory"
+            elif action == "stale-nonce":
+                msg["nonce"] = "configured-stale-nonce"
         if msg["kind"] == "instruction":
             text = msg["text"]
             match = re.search(r"PRIVATE_MEMORY=([a-f0-9]+)", text)
@@ -131,15 +205,39 @@ class Fake:
                     if row["job"] not in latest or row["attempt"] > latest[row["job"]]["attempt"]:
                         latest[row["job"]] = row
                 failures = [r for r in latest.values() if r["status"] == "FAIL"]
-                self.tool("proof_work_submit", {"batch": batch["batch"],
+                answer = {"batch": batch["batch"],
                     "failed_jobs": sorted(r["job"] for r in failures),
-                    "failed_tests": sum(r["failed_tests"] for r in failures)})
+                    "failed_tests": sum(r["failed_tests"] for r in failures)}
+                if self.mode == "grok" and self.scenario == "incorrect-work" and batch["batch"] == 0:
+                    answer["failed_tests"] += 1
+                    self.fault("incorrect-work-answer")
+                self.tool("proof_work_submit", answer)
             elif "WORK_PLAN_JSON=" in text:
                 for challenge in json.loads(text.split("WORK_PLAN_JSON=", 1)[1]):
                     self.tool("proof_send", challenge)
         elif msg["kind"] == "challenge":
+            if self.mode == "grok":
+                if self.scenario in {"queued-only", "interrupted"}:
+                    self.fault("queued-without-handling")
+                    return
+                if self.scenario == "crash":
+                    self.fault("native-process-exit-72")
+                    os._exit(72)
+                if self.scenario == "malformed-stdout":
+                    self.fault("non-json-stdout")
+                    with self.wire.lock:
+                        sys.stdout.write("unexpected startup banner\n")
+                        sys.stdout.flush()
+                    return
+            nonce, memory = msg["nonce"], memory_override or self.memory
+            if self.mode == "grok" and self.scenario in {"wrong-memory", "stale-nonce"}:
+                self.fault(self.scenario)
+                if self.scenario == "wrong-memory":
+                    memory = "forgotten-context"
+                else:
+                    nonce = "previous-challenge"
             self.tool("proof_send", {"to": msg["sender"], "kind": "reply", "case_id": msg["case_id"],
-                                     "nonce": msg["nonce"], "memory": self.memory})
+                                     "nonce": nonce, "memory": memory})
         elif msg["kind"] == "reply":
             self.tool("proof_report", {"phase": "received", "case_id": msg["case_id"],
                                        "nonce": msg["nonce"], "memory": msg["memory"], "peer": msg["sender"]})
@@ -164,8 +262,14 @@ class Fake:
                 self.wire.send({"method": "turn/completed", "params": {"threadId": self.session,
                                 "turn": {"id": turn, "status": "completed"}}})
             elif self.mode == "grok":
-                self.wire.send({"method": "_x.ai/session/update", "params": {"sessionId": self.session,
-                    "update": {"sessionUpdate": "turn_completed", "prompt_id": turn, "stop_reason": "end_turn"}}})
+                completion = {"method": "_x.ai/session/update", "params": {"sessionId": self.session,
+                    "update": {"sessionUpdate": "turn_completed", "prompt_id": turn, "stop_reason": "end_turn"}}}
+                if self.scenario == "missing-completion":
+                    self.fault("missing-native-completion")
+                else:
+                    self.wire.send(completion)
+                    if self.scenario == "delayed-duplicate":
+                        self.wire.send(completion)
                 if ident is not None:
                     self.wire.send({"id": ident, "result": {"stopReason": "end_turn"}})
             else:
@@ -195,12 +299,23 @@ class Fake:
             return
         elif method == "_x.ai/interject":
             assert params["sessionId"] == self.session
+            if self.scenario == "unsupported-interject":
+                self.fault("interject-method-not-found")
+                self.wire.send({"id": ident, "error": {"code": -32601, "message": "Injected missing interject"}})
+                return
             self.queue.put((self.decode(params["text"]), None))
             result = {"status": "queued"}
         elif ident is None:
             return
         else:
             self.wire.send({"id": ident, "error": {"code": -32601, "message": "Unsupported fixture method"}})
+            return
+        if method == "turn/start" and self.scenario == "delayed-duplicate":
+            def late_ack():
+                time.sleep(0.2)
+                self.wire.send({"id": ident, "result": result})
+            self.fault("late-turn-start-acknowledgement")
+            threading.Thread(target=late_ack, daemon=True).start()
             return
         self.wire.send({"id": ident, "result": result})
 

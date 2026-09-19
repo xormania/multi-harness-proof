@@ -5,7 +5,8 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-TOP = ("proof.py", "README.md", "AGENTS.md", "CLAUDE.md", "LICENSE", ".gitignore", "VALIDATION.md")
+TOP = ("proof.py", "README.md", "AGENTS.md", "CLAUDE.md", "LICENSE", ".gitignore", "VALIDATION.md",
+       "TESTING.md", "EXPERIMENTS.md", "proof.mock.example.json", "proof.live.example.json")
 
 
 def source_paths():

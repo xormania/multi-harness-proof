@@ -12,7 +12,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from .contract import validate_tool
 from .telemetry import Redactor
-from .workload import Workload
+from .workload import FIXTURE, Workload
 
 
 def write_json(path, value):
@@ -26,7 +26,7 @@ def write_json(path, value):
 
 
 class State:
-    def __init__(self, directory, peers, hold_timeout=180):
+    def __init__(self, directory, peers, hold_timeout=180, fixture=FIXTURE):
         self.directory = Path(directory)
         self.peers = tuple(peers)
         self.hold_timeout = hold_timeout
@@ -39,7 +39,7 @@ class State:
         self.tokens = {p: secrets.token_urlsafe(32) for p in peers}
         self.redactor = Redactor(self.tokens.values())
         self.log = (self.directory / "events.jsonl").open("x", encoding="utf-8")
-        self.workload = Workload(self.emit)
+        self.workload = Workload(self.emit, fixture)
 
     def emit(self, event, peer=None, **fields):
         with self.lock:
@@ -152,6 +152,7 @@ def serve(state):
                 elif self.path == "/event":
                     allowed = {"submitted", "delivery_error", "unsupported", "adapter_error",
                                "mcp_ready", "turn_started", "turn_completed", "permission_denied",
+                               "permission_requested", "permission_resolved",
                                "session_observed", "adapter_stopped", "native_session", "native_tool",
                                "native_identity_error", "activity", "tool_violation", "protocol_capability"}
                     event = body.pop("event")

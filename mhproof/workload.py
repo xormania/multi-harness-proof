@@ -5,6 +5,28 @@ from pathlib import Path
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "build-log.json"
 
 
+def read_fixture(path=FIXTURE):
+    value = json.loads(Path(path).read_text())
+    batches = value.get("batches") if isinstance(value, dict) else None
+    if not isinstance(batches, list) or len(batches) < 2:
+        raise ValueError("Fixture must contain at least two batches for work overlap")
+    for batch in batches:
+        if not isinstance(batch, list) or not batch:
+            raise ValueError("Fixture batches must be nonempty row lists")
+        attempts = set()
+        for row in batch:
+            if not isinstance(row, dict) or not isinstance(row.get("job"), str) or not row["job"] or \
+                    type(row.get("attempt")) is not int or row["attempt"] < 1 or \
+                    row.get("status") not in {"PASS", "FAIL", "WARN"} or \
+                    type(row.get("failed_tests")) is not int or row["failed_tests"] < 0:
+                raise ValueError("Invalid fixture row")
+            key = (row["job"], row["attempt"])
+            if key in attempts:
+                raise ValueError("Duplicate job/attempt makes fixture ordering ambiguous")
+            attempts.add(key)
+    return batches
+
+
 def expected(rows):
     latest = {}
     for row in rows:
@@ -16,9 +38,9 @@ def expected(rows):
 
 
 class Workload:
-    def __init__(self, emit):
+    def __init__(self, emit, fixture=FIXTURE):
         self.emit = emit
-        self.batches = json.loads(FIXTURE.read_text())["batches"]
+        self.batches = read_fixture(fixture)
         self.progress = {}
         self.released_batch = 0
 

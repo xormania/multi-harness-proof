@@ -75,9 +75,13 @@ def bundle(directory, output):
     # Never archive credentials, workspaces, unrelated files, or native histories.
     config = json.loads((directory / "run.json").read_text())
     redactor = Redactor(config["tokens"].values())
-    allowed = {"report.json", "manifest.json", "events.jsonl", "claude-debug.log"}
+    allowed = {"report.json", "manifest.json", "events.jsonl", "claude-debug.log", "settings.json", "fixture.json"}
     allowed |= {p + "-stderr.log" for p in ("codex", "grok")}
     allowed |= {p + "-trace.jsonl" for p in ("codex", "grok", "claude", "mcp-claude", "mcp-grok")}
+    if config.get("mode") == "mock":
+        allowed |= {"scenario.json", "behavior.json", "controller.log"}
+        allowed |= {p + "-launcher.log" for p in ("codex", "claude", "grok")}
+        allowed |= {"fake-" + p + "-faults.jsonl" for p in ("codex", "claude", "grok")}
     with zipfile.ZipFile(output, "x", zipfile.ZIP_DEFLATED) as archive:
         included = []
         for name in sorted(allowed):

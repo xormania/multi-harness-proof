@@ -2,6 +2,7 @@ import argparse
 import json
 import shutil
 import sys
+from pathlib import Path
 
 from .adapters import run_agent, version
 from .compat import codex_capability
@@ -35,7 +36,7 @@ def main(argv=None):
     agent.add_argument("--binary", help="Installed CLI path or name")
     agent.add_argument("--model", help="Override the selected profile's model for this invocation")
     agent.add_argument("--reasoning", help="Native effort level (for models that support it)")
-    agent.add_argument("--profile", choices=("economy", "existing"), default="economy",
+    agent.add_argument("--profile", choices=("economy", "existing"),
                        help="economy: Codex Luna/low, Claude Haiku, Grok default/low; existing: use harness defaults")
     mcp = sub.add_parser("mcp", help="Internal stdio MCP server for the adapters")
     mcp.add_argument("--dir", required=True)
@@ -46,6 +47,13 @@ def main(argv=None):
     diagnostics.add_argument("--out", required=True, help="New ZIP path (must not exist)")
     hook = sub.add_parser("claude-hook", help="Internal run-local native identity/tool observer")
     hook.add_argument("--dir", required=True)
+    experiment = sub.add_parser("experiment", help="Run a configured experiment in a fresh, preserved directory")
+    experiment.add_argument("--config", required=True)
+    history = sub.add_parser("history", help="Read experiment outcomes across preserved runs")
+    history.add_argument("--dir", required=True)
+    compare = sub.add_parser("compare", help="Compare two experiment snapshots and their evidence")
+    compare.add_argument("left")
+    compare.add_argument("right")
     args = parser.parse_args(argv)
     try:
         if args.command == "doctor":
@@ -66,12 +74,19 @@ def main(argv=None):
                 parser.error("Select at least two distinct peers")
             return run_suite(args.dir, args.peers, args.timeout, args.startup_timeout, work=not args.no_work)
         if args.command == "agent":
-            model, reasoning = args.model, args.reasoning
-            if args.profile == "economy":
-                model = model or {"codex": "gpt-5.6-luna", "claude": "haiku", "grok": None}[args.peer]
-                if args.peer != "claude":
-                    reasoning = reasoning or "low"
-            return run_agent(args.dir, args.peer, args.binary, model, reasoning)
+            from .experiments import agent_settings
+            config = json.loads((Path(args.dir) / "run.json").read_text())
+            settings = agent_settings(args.peer, config.get("agent_settings", {}).get(args.peer))
+            if args.profile:
+                settings = agent_settings(args.peer, {"profile": args.profile, "binary": settings["binary"]})
+            return run_agent(args.dir, args.peer, args.binary or settings["binary"],
+                             args.model or settings["model"], args.reasoning or settings["reasoning"])
+        if args.command in {"experiment", "history", "compare"}:
+            from .experiments import run_experiment, history, compare
+            if args.command == "experiment":
+                return run_experiment(args.config)
+            print(json.dumps(history(args.dir) if args.command == "history" else compare(args.left, args.right), indent=2))
+            return 0
         if args.command == "bundle":
             print(bundle(args.dir, args.out))
             return 0

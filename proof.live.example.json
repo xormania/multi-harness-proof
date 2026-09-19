@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "name": "native-messaging",
+  "mode": "live",
+  "output_root": "runs/experiments",
+  "peers": ["codex", "claude", "grok"],
+  "timeout": 180,
+  "startup_timeout": 600,
+  "checks": {
+    "round_trip_pairs": "all",
+    "busy_pairs": "ring",
+    "work": false,
+    "burst_per_peer": 2
+  },
+  "agents": {
+    "codex": {"profile": "economy"},
+    "claude": {"profile": "economy"},
+    "grok": {"profile": "economy"}
+  }
+}

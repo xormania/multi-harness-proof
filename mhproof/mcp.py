@@ -28,6 +28,7 @@ def run_mcp(directory, peer, channel=False):
     def channels():
         initialized.wait()
         while not stopped.is_set():
+            msg = None
             try:
                 polled = client.post("/poll", {})
                 if polled["stopped"]:
@@ -40,6 +41,14 @@ def run_mcp(directory, peer, channel=False):
                     client.event("submitted", message_id=msg["id"], case_id=msg["case_id"],
                                  transport="claude/channel", acceptance="notification_written")
             except Exception as e:
+                fields = {"error": str(e), "transport": "claude/channel"}
+                if msg:
+                    fields.update(message_id=msg["id"], case_id=msg["case_id"])
+                trace.record("channel_delivery_error", fields)
+                try:
+                    client.event("delivery_error", **fields)
+                except Exception:
+                    pass
                 print("Channel delivery stopped: " + str(e), file=sys.stderr)
                 return
 

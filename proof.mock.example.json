@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "name": "coordination-boundaries",
+  "mode": "mock",
+  "output_root": "runs/experiments",
+  "timeout": 4,
+  "startup_timeout": 15,
+  "checks": {
+    "round_trip_pairs": "all",
+    "busy_pairs": "ring",
+    "work": true,
+    "burst_per_peer": 4
+  },
+  "scenarios": [
+    {"name": "baseline", "preset": "happy", "expect": "pass"},
+    {
+      "name": "delayed-claude-reply",
+      "expect": "pass",
+      "faults": [{"peer": "claude", "on": "challenge", "case_prefix": "round-trip-", "action": "delay", "seconds": 0.3}]
+    },
+    {
+      "name": "dropped-second-grok-work-message",
+      "expect": "unverified",
+      "faults": [{"peer": "grok", "on": "challenge", "case_prefix": "work-", "occurrence": 2, "action": "drop"}]
+    }
+  ]
+}

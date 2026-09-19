@@ -4,7 +4,9 @@ Date: 2026-09-19. Runtime: Python 3.12, Linux.
 
 ## Verified locally
 
-- 24 standard-library unit/integration tests pass for version 0.2.
+- **54 tests passed** for version 0.3 in 202.594 seconds. This includes 18
+  process-level behavior scenarios, configurable experiments, and the existing
+  unit/integration checks.
 - The integration test runs the actual relay, adapters, MCP server, and verifier
   against deterministic **fake** Codex, Claude, and Grok processes. It checks
   all 15 message cases, three work scores, and independently supplied native
@@ -34,6 +36,35 @@ Date: 2026-09-19. Runtime: Python 3.12, Linux.
 - CLI smoke checks cover startup timeout producing an unverified report,
   diagnostic bundling without run credentials, and refusal to overwrite a run.
 - Bash launch scripts pass syntax checks.
+
+## Behavior and experiment coverage
+
+- The 18 mocked process scenarios cover successful delayed/duplicate delivery,
+  display-title changes, dropped handling, wrong context, stale nonces, missing
+  native observations/hooks/completion, changed sessions, unsupported methods,
+  denied permissions, process crashes, malformed stdout, incorrect work, reused
+  call IDs, forbidden tools, and operator interruption.
+- The runner asserts specific failure evidence, preserves earlier passes, and
+  marks expected failures as matched tests with **unverified proof reports**.
+  Reports, process output, exit codes, fault records, and native/MCP traces remain
+  available when using the artifact-preserving behavior command.
+- Grok canonical `x.ai/tool` version-1 identity is checked against pinned source.
+  Initial tool titles at that source are wire function names; versioned metadata
+  avoids dependence on later display text. Unknown or conflicting identity fails
+  closed. This source review does not establish installed-build compatibility.
+- Configuration checks cover strict fields, duplicate JSON keys, invalid fault
+  rules, model/profile resolution, selected pairs, burst sizes, copied fixture
+  validation, and two-peer live plan resolution without launching native CLIs.
+- Configured process tests run changed coordination plans through real adapters,
+  preserve both runs, and compare their settings and outcomes. The first snapshot
+  remains unchanged after editing and rerunning the configuration.
+- The supplied mock example was executed: baseline and delayed Claude handling
+  passed with four-message work bursts; dropping Grok's second work message left
+  the proof unverified as expected. This is simulated behavior evidence only.
+
+Reproduce with `bash scripts/test.sh`, `bash scripts/behavior.sh --dir runs/mock1`,
+or `bash scripts/experiment.sh proof.mock.example.json`. Details and boundaries
+are in [TESTING.md](TESTING.md) and [EXPERIMENTS.md](EXPERIMENTS.md).
 
 ## Still requires a local live run
 

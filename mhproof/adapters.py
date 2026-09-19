@@ -7,13 +7,14 @@ import shutil
 import shlex
 import subprocess
 import sys
+import time
 import traceback
 import uuid
 
 from . import VERSION
 from .contract import INSTRUCTIONS, TOOLS, render
 from .compat import codex_capability
-from .evidence import proof_name
+from .evidence import grok_tool_identity, proof_name
 from .relay import Client, write_json
 from .rpc import RPC, RPCError
 from .telemetry import Trace
@@ -61,19 +62,22 @@ class Native:
             raise ValueError("Native session identity missing or changed: " + origin)
         await self.event("native_session", native_id=native_id, origin=origin)
 
-    async def observe_tool(self, name, arguments, call_id, native_id, origin, turn_id=None):
+    async def observe_tool(self, name, arguments, call_id, native_id, origin, turn_id=None, identity_basis=None):
         await self.observe_session(native_id, origin)
+        wire_name = name
         name = proof_name(name)
         if not name:
-            await self.event("tool_violation", native_id=native_id, origin=origin, call_id=call_id)
+            await self.event("tool_violation", native_id=native_id, origin=origin, call_id=call_id,
+                             tool=wire_name, detail="Native tool is not an exact proof tool name")
             return False
         await self.event("native_tool", native_id=native_id, origin=origin, call_id=call_id,
-                         tool=name, arguments=arguments, turn_id=turn_id)
+                         tool=name, arguments=arguments, turn_id=turn_id, identity_basis=identity_basis)
         return True
 
     async def register(self, transport):
         await asyncio.to_thread(self.client.post, "/register", {
             "session_id": self.session, "pid": self.rpc.process.pid,
+            "binary": self.binary,
             "version": await asyncio.to_thread(version, self.peer, self.binary),
             "transport": transport, "model_requested": self.model or "harness default",
             "reasoning_requested": self.reasoning or "not overridden"})
@@ -291,13 +295,21 @@ class Grok(Native):
         title = params.get("toolCall", {}).get("title", "unknown tool")
         options = params.get("options", [])
         allow = next((o for o in options if o.get("kind") == "allow_once"), None)
+        started = time.monotonic()
+        await self.event("permission_requested", title=title, call_id=params.get("toolCall", {}).get("toolCallId"),
+                         option_kinds=[o.get("kind") for o in options], native_id=self.session)
         async with self.permission_lock:
+            queued_seconds = time.monotonic() - started
             print("\nGrok requests permission: " + str(title), flush=True)
             try:
                 answer = await self.permission_answer() if allow else "n"
             except (EOFError, OSError, ValueError):
                 answer = "n"
-        if answer.lower() == "y" and allow:
+        approved = answer.lower() == "y" and allow is not None
+        await self.event("permission_resolved", title=title, decision="allow_once" if approved else "cancelled",
+                         seconds=round(time.monotonic() - started, 3), queued_seconds=round(queued_seconds, 3),
+                         call_id=params.get("toolCall", {}).get("toolCallId"), native_id=self.session)
+        if approved:
             return {"outcome": {"outcome": "selected", "optionId": allow["optionId"]}}
         await self.event("permission_denied", method=method, title=title)
         return {"outcome": {"outcome": "cancelled"}}
@@ -326,9 +338,15 @@ class Grok(Native):
             if kind in {"agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"}:
                 self.native_busy = True
             if kind == "tool_call":
-                name, arguments = proof_name(update.get("title")), update.get("rawInput")
-                await self.observe_tool(update.get("title"), arguments, update.get("toolCallId"),
-                                        params["sessionId"], "grok/session/update")
+                try:
+                    wire_name, basis = grok_tool_identity(update)
+                except ValueError as error:
+                    await self.event("tool_violation", native_id=params["sessionId"],
+                                     call_id=update.get("toolCallId"), tool=update.get("title"), detail=str(error))
+                    return
+                name, arguments = proof_name(wire_name), update.get("rawInput")
+                await self.observe_tool(wire_name, arguments, update.get("toolCallId"),
+                                        params["sessionId"], "grok/session/update", identity_basis=basis)
                 for ident, msg in list(self.pending_interjections.items()):
                     args = arguments if isinstance(arguments, dict) else {}
                     matches = (msg["kind"] == "challenge" and name == "proof_send" and args.get("kind") == "reply" or
@@ -403,6 +421,7 @@ def claude(client, binary, model, reasoning=None):
     # Register before the MCP child starts polling; the supplied UUID is the
     # explicit native --session-id, not an invented broker session identity.
     client.post("/register", {"session_id": session, "pid": os.getpid(),
+                             "binary": binary,
                              "identity_source": "claude --session-id (launcher PID)",
                              "version": version("claude", binary), "transport": "claude/channel",
                              "model_requested": model or "harness default",

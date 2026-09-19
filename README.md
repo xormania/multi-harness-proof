@@ -10,8 +10,8 @@ participant stays in one native session throughout the experiment.
 The output is evidence: message traces, verified replies, scored work, and
 diagnostics that explain what succeeded or failed on a particular installation.
 
-> **Experimental:** version 0.2 passes 24 offline tests, including
-> an integration test with simulated harnesses. Live compatibility and actual
+> **Experimental:** version 0.3 includes 18 mocked end-to-end behavior scenarios
+> and configurable coordination experiments. Live compatibility and actual
 > model behavior remain unverified. See [validation status](VALIDATION.md).
 
 ## What gets tested
@@ -61,6 +61,25 @@ adapter repeats that check before starting a session. Missing or inconclusive
 schema support stops that launch with a diagnostic. Neither the probe nor the
 tests make model calls. Account policies, native hooks, and permission prompts
 still need to be checked during a live run.
+
+### Explore failures offline
+
+```bash
+# Keep the reports and telemetry from all 18 predefined behavior scenarios.
+bash scripts/behavior.sh --dir runs/mock1
+
+# Configure message pairs, bursts, delays, and dropped messages; preserve each run.
+bash scripts/experiment.sh proof.mock.example.json
+```
+
+The second command runs the supplied configuration in a new timestamped directory.
+Edit it and rerun to compare behavior across settings. Neither command launches
+real vendor CLIs or makes model calls. A crash or dropped message must produce an
+unverified proof to meet its expected outcome.
+
+See [behavior tests and telemetry](TESTING.md) and
+[configurable experiments, run history, and comparison](EXPERIMENTS.md). Both
+workflows retain the real verifier and label simulated reports `mock`.
 
 ### First run: messaging
 
@@ -160,6 +179,9 @@ native identity evidence. Missing native observations leave the run unverified.
 Claude's hooks are supplied through a generated run-local `--settings` file.
 Startup requires a ready report with the channel-delivered memory marker and a
 matching native tool observation; an MCP connection alone is insufficient.
+Grok prefers versioned `x.ai/tool` wire-name metadata, with exact ACP tool titles
+as a fallback when that metadata is absent. Unknown versions, conflicting names,
+and non-proof identities stop verification; display prose alone is insufficient.
 
 ## Results and diagnostics
 
@@ -194,9 +216,14 @@ Each message case lists `native_evidence_seqs`. Busy cases also record
 These timing observations do not change the round-trip predicate. A later-turn
 reply in the same session is recorded honestly; it does not prove mid-turn handling.
 An unavailable turn comparison is `null`, not a successful comparison.
+Late RPC acknowledgements are also recorded separately. Incomplete cases include
+`diagnostics` with submission sequences, nonce/memory match indicators, and native
+tool observations. The report's `evidence_last_seq` identifies its verdict snapshot.
 
 The overall verdict also requires `tool_audit.status` to pass: each relay tool
 call must have a matching native observation, with distinct native call IDs.
+Reusing a call ID with different arguments or identity invalidates the audit;
+identical repeated observations cannot cover additional calls.
 Observed use of non-proof tools invalidates the run, including automatically
 allowed Codex read commands. This detects violations of the cooperative test;
 it is not an operating-system access boundary.
@@ -211,10 +238,14 @@ Local telemetry is enabled for every run:
 | MCP calls, tool arguments/results, and channel notifications | `mcp-claude-trace.jsonl`, `mcp-grok-trace.jsonl` |
 | Harness diagnostics | `codex-stderr.log`, `grok-stderr.log`, `claude-trace.jsonl`, `claude-debug.log` |
 | Runtime information and hashes of the proof source and fixture | `manifest.json` |
+| Configured launch requests and the copied work input | `settings.json`, `fixture.json` |
 
 Protocol traces are flushed after each entry and include wall-clock and monotonic
 timestamps. Native usage/model metadata is retained when the harness exposes it.
 The report records requested settings; effective settings require native evidence.
+Timeouts retain activity/audit snapshots. Grok permission requests include decision
+and wait timing. Configured experiments additionally preserve their original
+configuration, resolved defaults, scenario definitions, and per-run history.
 
 The diagnostic bundle is a local ZIP; nothing is uploaded automatically. It
 excludes run credentials, generated MCP configuration, and workspaces, and
@@ -357,6 +388,8 @@ Interfaces reviewed for the initial implementation on **2026-09-19**:
 - [Grok Build CLI options](https://docs.x.ai/build/cli/reference)
 - [Grok interjection extension at the reviewed commit](https://github.com/xai-org/grok-build/blob/482711333c7195dc16a272777f86086d615e2afb/crates/codegen/xai-grok-shell/src/extensions/interject.rs)
 - [Grok native completion signals at the reviewed commit](https://github.com/xai-org/grok-build/blob/482711333c7195dc16a272777f86086d615e2afb/crates/codegen/xai-grok-shell/src/session/turn_completion.rs)
+- [Grok initial tool notifications](https://github.com/xai-org/grok-build/blob/482711333c7195dc16a272777f86086d615e2afb/crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs)
+- [Grok canonical tool metadata contract](https://github.com/xai-org/grok-build/blob/482711333c7195dc16a272777f86086d615e2afb/crates/codegen/xai-grok-tools/schema/tool_meta.schema.json)
 - [ACP session and MCP setup](https://agentclientprotocol.com/protocol/v1/session-setup)
 
 ## License

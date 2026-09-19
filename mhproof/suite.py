@@ -1,5 +1,6 @@
 """Live checks with explicit evidence requirements; queueing is never a pass."""
 import itertools
+import hashlib
 import json
 from pathlib import Path
 import secrets
@@ -12,6 +13,7 @@ from .contract import INSTRUCTIONS
 from .evidence import native_call, tool_audit
 from .relay import State, serve, write_json
 from .telemetry import manifest
+from .workload import FIXTURE
 
 
 def case_evidence(events, source, target, case_id, nonce, memory, sessions, busy=False):
@@ -33,7 +35,7 @@ def case_evidence(events, source, target, case_id, nonce, memory, sessions, busy
     for msg, recipient in ((challenge, target), (reply, source)):
         hit = next((e for e in events if e["event"] == "submitted" and e["peer"] == recipient and
                     e.get("message_id") == msg["message"]["id"]), None)
-        if not hit:
+        if not hit or hit["seq"] <= msg["seq"]:
             return None
         submitted.append(hit)
     chain = [challenge, submitted[0], reply, submitted[1], received]
@@ -49,7 +51,10 @@ def case_evidence(events, source, target, case_id, nonce, memory, sessions, busy
         if not observed:
             return None
         native.append(observed)
-    timing = {}
+    # RPC acknowledgement can arrive after the model has already replied. Its
+    # event is an observation time, not a claim about when ingestion occurred.
+    timing = {"challenge_ack_after_reply": submitted[0]["seq"] > reply["seq"],
+              "reply_ack_after_receipt": submitted[1]["seq"] > received["seq"]}
     if busy:
         start = next((e for e in events if e["event"] == "hold_started" and
                       e["peer"] == target and e.get("case_id") == case_id), None)
@@ -75,21 +80,50 @@ def case_evidence(events, source, target, case_id, nonce, memory, sessions, busy
             "seconds": round(received["time"] - challenge["time"], 3)}
 
 
+def case_diagnostics(events, result, memory):
+    """Non-gating breadcrumbs: retain mismatches instead of reducing all to timeout."""
+    queued = [e for e in events if e["event"] == "queued" and e["message"].get("case_id") == result["case_id"]]
+    challenges = [e for e in queued if e["peer"] == result["source"] and e["message"]["kind"] == "challenge"]
+    replies = [e for e in queued if e["peer"] == result["target"] and e["message"]["kind"] == "reply"]
+    reports = [e for e in events if e["event"] == "report" and e["peer"] == result["source"] and
+               e["report"].get("case_id") == result["case_id"]]
+    def submissions(messages, recipient):
+        ids = {e["message"]["id"] for e in messages}
+        return [e["seq"] for e in events if e["event"] == "submitted" and e["peer"] == recipient and e.get("message_id") in ids]
+    return {"challenge_seqs": [e["seq"] for e in challenges],
+            "challenge_submission_seqs": submissions(challenges, result["target"]),
+            "reply_observations": [{"seq": e["seq"], "nonce_matches": e["message"].get("nonce") == result["nonce"],
+                                    "memory_matches": e["message"].get("memory") == memory} for e in replies],
+            "reply_submission_seqs": submissions(replies, result["source"]),
+            "receipt_observations": [{"seq": e["seq"], "nonce_matches": e["report"].get("nonce") == result["nonce"],
+                                      "memory_matches": e["report"].get("memory") == memory} for e in reports],
+            "native_tool_seqs": [e["seq"] for e in events if e["event"] == "native_tool" and
+                                  isinstance(e.get("arguments"), dict) and e["arguments"].get("case_id") == result["case_id"]]}
+
+
 class Suite:
-    def __init__(self, state, timeout, startup_timeout, work=True):
+    def __init__(self, state, timeout, startup_timeout, work=True, checks=None):
         self.state, self.timeout, self.startup_timeout = state, timeout, startup_timeout
         self.memories = {p: secrets.token_hex(12) for p in state.peers}
         self.results = []
         self.work = work
         self.work_results = []
         self.phase = "initializing"
+        checks = checks or {}
+        self.round_trip_pairs = checks.get("round_trip_pairs", list(itertools.permutations(state.peers, 2)))
+        self.busy_pairs = checks.get("busy_pairs", [(state.peers[(i + 1) % len(state.peers)], target)
+                                                    for i, target in enumerate(state.peers)])
+        self.burst_per_peer = checks.get("burst_per_peer", 2)
+
+    def planned(self):
+        return len(self.round_trip_pairs) + len(self.busy_pairs) + (self.burst_per_peer * len(self.state.peers) if self.work else 0)
 
     def wait(self, predicate, timeout=None):
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
         while time.monotonic() < deadline:
             events = self.state.snapshot()
             errors = [e for e in events if e["event"] in ("adapter_error", "delivery_error", "unsupported", "adapter_stopped",
-                                                        "native_identity_error", "tool_violation")]
+                                                        "native_identity_error", "tool_violation", "permission_denied")]
             if errors:
                 useful = [e for e in errors if e["event"] != "adapter_stopped"]
                 raise RuntimeError(json.dumps((useful or errors)[-1]))
@@ -102,6 +136,12 @@ class Suite:
             if value:
                 return value
             time.sleep(0.1)
+        events = self.state.snapshot()
+        self.state.emit("verification_timeout", phase=self.phase,
+                        timeout_seconds=self.timeout if timeout is None else timeout,
+                        activity={peer: next((e for e in reversed(events) if e["event"] == "activity" and
+                                             e["peer"] == peer), None) for peer in self.state.peers},
+                        tool_audit=tool_audit(events, self.state.sessions))
         raise TimeoutError("No complete evidence during " + self.phase +
                            "; inspect native observations, tool permissions, and delivery traces")
 
@@ -147,7 +187,7 @@ class Suite:
         case_id = f"{kind}-{source}-to-{target}"
         nonce = secrets.token_hex(12)
         result = {"case_id": case_id, "source": source, "target": target,
-                  "check": kind, "status": "unverified"}
+                  "check": kind, "status": "unverified", "nonce": nonce}
         self.results.append(result)
         self.phase = case_id
         print("Running " + case_id, flush=True)
@@ -182,10 +222,10 @@ class Suite:
 
     def run(self):
         self.startup()
-        for source, target in itertools.permutations(self.state.peers, 2):
+        for source, target in self.round_trip_pairs:
             self.case(source, target, busy=False)
-        for i, target in enumerate(self.state.peers):
-            self.case(self.state.peers[(i + 1) % len(self.state.peers)], target, busy=True)
+        for source, target in self.busy_pairs:
+            self.case(source, target, busy=True)
         if self.work:
             self.work_stress()
         self.phase = "final native completion and tool audit"
@@ -194,16 +234,16 @@ class Suite:
 
     def work_stress(self):
         self.settled()
-        print("Running build-log work fixture with a two-message burst per peer", flush=True)
+        print(f"Running build-log work fixture with a {self.burst_per_peer}-message burst per peer", flush=True)
         plans = {}
         checks = []
         for i, source in enumerate(self.state.peers):
             target = self.state.peers[(i + 1) % len(self.state.peers)]
             plans[source] = [{"to": target, "kind": "challenge", "case_id": f"work-{source}-to-{target}-{j}",
-                              "nonce": secrets.token_hex(12), "memory": ""} for j in range(2)]
+                              "nonce": secrets.token_hex(12), "memory": ""} for j in range(self.burst_per_peer)]
             for challenge in plans[source]:
                 result = {"case_id": challenge["case_id"], "source": source, "target": target,
-                          "check": "message-during-work", "status": "unverified"}
+                          "check": "message-during-work", "status": "unverified", "nonce": challenge["nonce"]}
                 self.results.append(result)
                 checks.append((result, challenge))
         for peer in self.state.peers:
@@ -270,19 +310,36 @@ class Suite:
         print("PASS build-log accuracy and all message/work overlaps", flush=True)
 
 
-def run_suite(directory, peers, timeout=180, startup_timeout=600, work=True):
+def run_suite(directory, peers, timeout=180, startup_timeout=600, work=True, mode="live", settings=None):
+    if mode not in {"live", "mock"}:
+        raise ValueError("Unknown evidence mode")
     directory = Path(directory).resolve()
     # A failed run remains inspectable; never overwrite or silently resume it.
     directory.mkdir(parents=True, exist_ok=False, mode=0o700)
-    state = State(directory, peers, hold_timeout=timeout + 15)
+    settings = settings or {}
+    fixture = Path(settings.get("fixture", FIXTURE))
+    # Copy the selected input, so later source/config edits cannot change this run.
+    fixture_copy = directory / "fixture.json"
+    write_json(fixture_copy, json.loads(fixture.read_text()))
+    state = State(directory, peers, hold_timeout=timeout + 15, fixture=fixture_copy)
     server = serve(state)
-    write_json(directory / "run.json", {"version": VERSION,
+    write_json(directory / "run.json", {"version": VERSION, "mode": mode,
                "url": f"http://127.0.0.1:{server.server_address[1]}",
-               "tokens": state.tokens, "peers": peers, "timeout": timeout})
-    write_json(directory / "manifest.json", manifest(Path(__file__).resolve().parents[1], peers, timeout))
-    suite = Suite(state, timeout, startup_timeout, work=work)
-    report = {"version": VERSION, "mode": "live", "status": "unverified", "peers": list(peers),
+               "tokens": state.tokens, "peers": peers, "timeout": timeout,
+               "agent_settings": settings.get("agents", {})})
+    if settings:
+        write_json(directory / "settings.json", settings)
+    write_json(directory / "manifest.json", {**manifest(Path(__file__).resolve().parents[1], peers, timeout), "mode": mode,
+               "fixture_sha256": hashlib.sha256(fixture_copy.read_bytes()).hexdigest(),
+               "fixture_batches": len(state.workload.batches),
+               "fixture_rows": sum(len(batch) for batch in state.workload.batches)})
+    suite = Suite(state, timeout, startup_timeout, work=work, checks=settings.get("checks"))
+    report = {"version": VERSION, "mode": mode, "status": "unverified", "peers": list(peers),
               "started": time.time(), "cases": suite.results, "work": suite.work_results,
+              "settings": {"timeout": timeout, "startup_timeout": startup_timeout, "work": work,
+                           "hold_timeout": timeout + 15, "grok_prompt_timeout": 3 * timeout + 30,
+                           "round_trip_pairs": suite.round_trip_pairs, "busy_pairs": suite.busy_pairs,
+                           "burst_per_peer": suite.burst_per_peer, "agents": settings.get("agents", {})},
               "limits": ["Busy means a native proof_hold tool call was outstanding when delivery was submitted.",
                          "A pass does not prove interruption during token generation or arbitrary tools.",
                          "Claude completion is observed through run-local hooks; Grok combines native completion with pending deliveries.",
@@ -300,16 +357,24 @@ def run_suite(directory, peers, timeout=180, startup_timeout=600, work=True):
         report["status"] = "pass"
     except KeyboardInterrupt:
         report["detail"] = "Interrupted by operator"
+        state.emit("verification_failed", phase=suite.phase, detail=report["detail"])
     except Exception as e:
         report["detail"] = str(e)
+        state.emit("verification_failed", phase=suite.phase, detail=report["detail"])
         print("UNVERIFIED: " + str(e), flush=True)
     finally:
         state.close()
         events = state.snapshot()
+        for result in suite.results:
+            if result["status"] != "pass":
+                result["diagnostics"] = case_diagnostics(events, result, suite.memories[result["target"]])
         report.update(finished=time.time(), sessions=state.sessions, phase=suite.phase,
                       tool_audit=tool_audit(events, state.sessions),
+                      evidence_last_seq=events[-1]["seq"] if events else 0,
                       capability_probes=[e for e in events if e["event"] == "protocol_capability"])
-        planned = len(peers) * (len(peers) - 1) + len(peers) + (2 * len(peers) if work else 0)
+        if report["status"] == "pass" and report["tool_audit"]["status"] != "pass":
+            report.update(status="unverified", detail="Final tool audit did not pass")
+        planned = suite.planned()
         report["cases_planned"] = planned
         report["cases_not_run"] = planned - len(suite.results)
         write_json(directory / "report.json", report)
@@ -320,4 +385,5 @@ def run_suite(directory, peers, timeout=180, startup_timeout=600, work=True):
         time.sleep(2)
         server.shutdown()
         server.server_close()
+        state.log.close()
     return 0 if report["status"] == "pass" else 1
