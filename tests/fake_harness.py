@@ -1,7 +1,7 @@
 """Deterministic protocol fixture. NOT a harness/model performance test.
 
 Speaks the native wire protocols, invokes the real relay tools, and maintains
-its own memory. Run only through test_live_wires.py, in temporary directories.
+its own memory. Run only through test_proof.py, in temporary directories.
 """
 import json
 from pathlib import Path
@@ -53,6 +53,8 @@ class Fake:
         self.mode = mode
         self.session = mode + "-fixture-" + uuid.uuid4().hex
         self.memory = None
+        self.active_turn = None
+        self.hooks = {}
         self.queue = queue.Queue()
         self.wire = Wire(sys.stdin, sys.stdout, self.handle)
         self.mcp = None
@@ -79,16 +81,31 @@ class Fake:
     def tool(self, name, args):
         if self.mode == "codex":
             result = self.wire.call("item/tool/call", {
-                "threadId": self.session, "turnId": "fixture-turn", "callId": uuid.uuid4().hex,
+                "threadId": self.session, "turnId": self.active_turn, "callId": uuid.uuid4().hex,
                 "tool": name, "arguments": args})
             if not result["success"]:
                 raise RuntimeError(result)
             return json.loads(result["contentItems"][0]["text"])
         else:
+            if self.mode == "grok":
+                self.wire.send({"method": "session/update", "params": {"sessionId": self.session,
+                    "update": {"sessionUpdate": "tool_call", "toolCallId": uuid.uuid4().hex,
+                               "title": "coord_proof__" + name, "rawInput": args}}})
+            else:
+                self.hook("PreToolUse", tool_name="mcp__coord_proof__" + name,
+                          tool_input=args, tool_use_id=uuid.uuid4().hex)
             result = self.mcp.call("tools/call", {"name": name, "arguments": args})
             if result.get("isError"):
                 raise RuntimeError(result)
             return json.loads(result["content"][0]["text"])
+
+    def hook(self, event, **fields):
+        packet = {"session_id": self.session, "prompt_id": self.active_turn,
+                  "hook_event_name": event, **fields}
+        for group in self.hooks.get(event, []):
+            for hook in group["hooks"]:
+                subprocess.run(hook["command"], shell=True, input=json.dumps(packet),
+                               text=True, check=True, timeout=5)
 
     def react(self, msg):
         if msg["kind"] == "instruction":
@@ -104,31 +121,22 @@ class Fake:
             elif text.startswith("Call proof_send once with "):
                 args, _ = json.JSONDecoder().raw_decode(text.split("with ", 1)[1])
                 self.tool("proof_send", args)
-            elif "WORK_PLAN_JSON=" in text:
-                challenges = json.loads(text.split("WORK_PLAN_JSON=", 1)[1])
-                while True:
-                    batch = self.tool("proof_work_next", {})
-                    if batch["done"]:
-                        break
-                    # Simulate a little latency so concurrently launched fixtures
-                    # overlap. This is not a claim about model execution time.
+            elif "WORK_BATCH=" in text:
+                batch = self.tool("proof_work_next", {})
+                # Deliberately unequal speeds; overlap must come from the barrier.
+                if self.mode == "grok":
                     time.sleep(0.15)
-                    latest = {}
-                    for row in batch["rows"]:
-                        if row["job"] not in latest or row["attempt"] > latest[row["job"]]["attempt"]:
-                            latest[row["job"]] = row
-                    failures = [r for r in latest.values() if r["status"] == "FAIL"]
-                    self.tool("proof_work_submit", {"batch": batch["batch"],
-                        "failed_jobs": sorted(r["job"] for r in failures),
-                        "failed_tests": sum(r["failed_tests"] for r in failures)})
-                    if batch["batch"] == 0:
-                        for challenge in challenges:
-                            self.tool("proof_send", challenge)
-                    while not self.queue.empty():
-                        incoming, ident = self.queue.get()
-                        self.react(incoming)
-                        if self.mode == "grok" and ident is not None:
-                            self.wire.send({"id": ident, "result": {"stopReason": "end_turn"}})
+                latest = {}
+                for row in batch["rows"]:
+                    if row["job"] not in latest or row["attempt"] > latest[row["job"]]["attempt"]:
+                        latest[row["job"]] = row
+                failures = [r for r in latest.values() if r["status"] == "FAIL"]
+                self.tool("proof_work_submit", {"batch": batch["batch"],
+                    "failed_jobs": sorted(r["job"] for r in failures),
+                    "failed_tests": sum(r["failed_tests"] for r in failures)})
+            elif "WORK_PLAN_JSON=" in text:
+                for challenge in json.loads(text.split("WORK_PLAN_JSON=", 1)[1]):
+                    self.tool("proof_send", challenge)
         elif msg["kind"] == "challenge":
             self.tool("proof_send", {"to": msg["sender"], "kind": "reply", "case_id": msg["case_id"],
                                      "nonce": msg["nonce"], "memory": self.memory})
@@ -140,12 +148,14 @@ class Fake:
         while True:
             msg, ident = self.queue.get()
             turn = uuid.uuid4().hex
+            self.active_turn = turn
             if self.mode == "codex":
                 self.wire.send({"method": "turn/started", "params": {"threadId": self.session,
                                 "turn": {"id": turn, "status": "inProgress"}}})
             self.react(msg)
-            # Drain native interjections before completing this prompt/turn.
-            while not self.queue.empty():
+            # Claude uses later turns. Grok deliberately exercises fallback turns
+            # with no session/prompt response for the interjected message.
+            while self.mode == "codex" and not self.queue.empty():
                 extra, extra_ident = self.queue.get()
                 self.react(extra)
                 if self.mode == "grok" and extra_ident is not None:
@@ -153,8 +163,13 @@ class Fake:
             if self.mode == "codex":
                 self.wire.send({"method": "turn/completed", "params": {"threadId": self.session,
                                 "turn": {"id": turn, "status": "completed"}}})
-            elif self.mode == "grok" and ident is not None:
-                self.wire.send({"id": ident, "result": {"stopReason": "end_turn"}})
+            elif self.mode == "grok":
+                self.wire.send({"method": "_x.ai/session/update", "params": {"sessionId": self.session,
+                    "update": {"sessionUpdate": "turn_completed", "prompt_id": turn, "stop_reason": "end_turn"}}})
+                if ident is not None:
+                    self.wire.send({"id": ident, "result": {"stopReason": "end_turn"}})
+            else:
+                self.hook("Stop")
 
     def handle(self, packet):
         method = packet["method"]
@@ -192,6 +207,9 @@ class Fake:
     def run(self):
         try:
             if self.mode == "claude":
+                self.session = sys.argv[sys.argv.index("--session-id") + 1]
+                self.hooks = json.loads(Path(sys.argv[sys.argv.index("--settings") + 1]).read_text())["hooks"]
+                self.hook("SessionStart")
                 cfg = json.loads(Path(sys.argv[sys.argv.index("--mcp-config") + 1]).read_text())
                 mcp = cfg["mcpServers"]["coord_proof"]
                 self.connect_mcp(mcp["command"], mcp["args"])
@@ -207,5 +225,12 @@ class Fake:
 if __name__ == "__main__":
     if "--version" in sys.argv:
         print("FAKE-OFFLINE-FIXTURE 0")
+    elif "generate-json-schema" in sys.argv:
+        if "--help" in sys.argv:
+            print("--out DIR --experimental")
+        else:
+            destination = Path(sys.argv[sys.argv.index("--out") + 1]) / "TurnStartParams.json"
+            destination.write_text(json.dumps({"title": "TurnStartParams", "properties": {
+                "threadId": {}, "input": {}, "toolOutput": {}}}))
     else:
         Fake(sys.argv[1]).run()

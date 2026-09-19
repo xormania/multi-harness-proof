@@ -17,6 +17,7 @@ def run_mcp(directory, peer, channel=False):
     output_lock = threading.Lock()
     initialized = threading.Event()
     stopped = threading.Event()
+    protocol_version = "2025-06-18"  # The one implemented version; clients may negotiate down to it.
 
     def write(packet):
         with output_lock:
@@ -47,7 +48,7 @@ def run_mcp(directory, peer, channel=False):
         method = packet.get("method")
         try:
             if method == "notifications/initialized":
-                client.event("mcp_ready", channel=channel)
+                client.event("mcp_ready", channel=channel, protocol_version=protocol_version)
                 if os.environ.get("CLAUDE_CODE_SESSION_ID"):
                     client.event("session_observed", native_id=os.environ["CLAUDE_CODE_SESSION_ID"])
                 initialized.set()
@@ -58,7 +59,7 @@ def run_mcp(directory, peer, channel=False):
                 caps = {"tools": {}}
                 if channel:
                     caps["experimental"] = {"claude/channel": {}}
-                result = {"protocolVersion": "2025-06-18", "capabilities": caps,
+                result = {"protocolVersion": protocol_version, "capabilities": caps,
                           "serverInfo": {"name": "coord_proof", "version": VERSION},
                           "instructions": INSTRUCTIONS}
             elif method == "ping":

@@ -73,7 +73,7 @@ class RPC:
                 except ValueError:
                     if self.trace:
                         self.trace.record("invalid_rpc_line", {"line": line.decode("utf-8", errors="replace")})
-                    raise
+                    raise ValueError("Non-JSON data on native protocol stdout; see invalid_rpc_line in trace") from None
                 if self.trace:
                     self.trace.record("rpc_in", packet)
                 if "method" in packet:

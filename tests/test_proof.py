@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import os
 from pathlib import Path
@@ -9,10 +10,14 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+from unittest.mock import AsyncMock
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
 from mhproof.adapters import Codex, Grok
 from mhproof.contract import validate_tool
+from mhproof.compat import supports_tool_output
+from mhproof.evidence import claude_hook, tool_audit
 from mhproof.relay import Client, State, serve, write_json
 from mhproof.rpc import RPC, RPCError
 from mhproof.suite import Suite, case_evidence
@@ -70,6 +75,18 @@ class RelayFixture(unittest.TestCase):
         with self.assertRaises(HTTPError):
             client.tool("proof_work_submit", {"batch": batch["batch"], "failed_jobs": [], "failed_tests": 0})
 
+    def test_work_requires_controller_release_before_later_batches(self):
+        client = self.clients["grok"]
+        client.post("/register", {"session_id": "work-session"})
+        batch = client.tool("proof_work_next", {})
+        client.tool("proof_work_submit", {"batch": 0, **expected(batch["rows"])})
+        with self.assertRaises(HTTPError):
+            client.tool("proof_work_next", {})
+        self.assertFalse(any(e["event"] == "work_completed" for e in self.state.snapshot()))
+        with self.state.lock:
+            self.state.workload.release_batch(1)
+        self.assertEqual(client.tool("proof_work_next", {})["batch"], 1)
+
     def test_trace_and_bundle_exclude_credentials(self):
         with patch.dict(os.environ, {"XAI_API_KEY": "example-test-api-key"}):
             trace = Trace(self.directory, "grok")
@@ -78,12 +95,14 @@ class RelayFixture(unittest.TestCase):
             trace.close()
             write_json(self.directory / "report.json", {"status": "unverified"})
             (self.directory / "claude-mcp.json").write_text("DO NOT INCLUDE")
+            (self.directory / "claude-settings.json").write_text("DO NOT INCLUDE EITHER")
             (self.directory / "claude-debug.log").write_text("example-test-api-key " + self.state.tokens["grok"])
             archive_path = bundle(self.directory, self.directory / "diag.zip")
             import zipfile
             with zipfile.ZipFile(archive_path) as archive:
                 self.assertNotIn("diagnostics/run.json", archive.namelist())
                 self.assertNotIn("diagnostics/claude-mcp.json", archive.namelist())
+                self.assertNotIn("diagnostics/claude-settings.json", archive.namelist())
                 data = "\n".join(archive.read(name).decode() for name in archive.namelist())
                 for secret in ["new-server-token", "example-test-api-key", self.state.tokens["grok"], "another-token"]:
                     self.assertNotIn(secret, data)
@@ -152,7 +171,16 @@ class RelayFixture(unittest.TestCase):
             events = self.state.snapshot()
             self.assertEqual(len([e for e in events if e["event"] == "registered"]), 3)
             for peer in self.state.peers:
-                self.assertEqual(len({e["session_id"] for e in events if e["peer"] == peer and "session_id" in e}), 1)
+                native = [e for e in events if e["peer"] == peer and e["event"] == "native_tool"]
+                self.assertTrue(native)
+                self.assertEqual({e["native_id"] for e in native}, {self.state.sessions[peer]["session_id"]})
+            self.assertEqual(tool_audit(events, self.state.sessions)["status"], "pass")
+            barrier = next(e["seq"] for e in events if e["event"] == "work_burst_submitted")
+            self.assertTrue(all(e["seq"] > barrier for e in events
+                                if e["event"] == "work_batch_issued" and e["batch"] > 0))
+            self.assertTrue(any(e["event"] == "submitted" and e.get("transport") == "grok/_x.ai/interject" for e in events))
+            claude_busy = next(r for r in suite.results if r["check"] == "busy" and r["target"] == "claude")
+            self.assertFalse(claude_busy["timing"]["reply_in_hold_turn"])
         except Exception:
             for log in logs:
                 log.seek(0)
@@ -190,7 +218,16 @@ class VerifierTests(unittest.TestCase):
             {"event": "report", "peer": "codex", "report": {"phase": "received", "case_id": "t", "nonce": "n", "memory": "secret", "peer": "grok"}},
         ]
         for i, e in enumerate(events):
-            e.update(seq=i + 1, time=i, session_id=sessions[e["peer"]]["session_id"])
+            e.update(seq=i + 1, time=i, registered_session_id=sessions[e["peer"]]["session_id"])
+        for index in (0, 2, 4):
+            event = events[index]
+            name = "proof_send" if index < 4 else "proof_report"
+            args = ({k: event["message"][k] for k in ("to", "kind", "case_id", "nonce", "memory")}
+                    if index < 4 else event["report"])
+            events.append({"event": "native_tool", "peer": event["peer"], "tool": name,
+                           "arguments": copy.deepcopy(args), "native_id": sessions[event["peer"]]["session_id"],
+                           "origin": "codex/item/tool/call" if event["peer"] == "codex" else "grok/session/update",
+                           "call_id": str(index), "turn_id": "reply-turn", "seq": index + 0.5})
         return events, sessions
 
     def check(self, events, sessions, busy=False):
@@ -208,7 +245,7 @@ class VerifierTests(unittest.TestCase):
             events[2]["message"][key] = value
             self.assertIsNone(self.check(events, sessions))
         events, sessions = self.fixture()
-        events[2]["session_id"] = "new-session"
+        events[-2]["native_id"] = "new-session"
         self.assertIsNone(self.check(events, sessions))
 
     def test_busy_requires_observed_overlap(self):
@@ -216,12 +253,163 @@ class VerifierTests(unittest.TestCase):
         self.assertIsNone(self.check(events, sessions, True))
         start = {"event": "hold_started", "peer": "grok", "case_id": "t", "seq": 0}
         finish = {"event": "hold_finished", "peer": "grok", "case_id": "t", "seq": 6, "released": True}
+        events.append({"event": "native_tool", "peer": "grok", "tool": "proof_hold", "arguments": {"case_id": "t"},
+                       "native_id": "g", "origin": "grok/session/update", "call_id": "held", "seq": -1,
+                       "turn_id": "hold-turn"})
         self.assertIsNotNone(self.check([start, *events, finish], sessions, True))
+        evidence = self.check([start, *events, finish], sessions, True)
+        self.assertTrue(evidence["timing"]["reply_before_hold_finished"])
+        self.assertFalse(evidence["timing"]["reply_in_hold_turn"])
         finish["seq"] = 1
         self.assertIsNone(self.check([start, finish, *events], sessions, True))
 
+    def test_registered_labels_without_native_observations_cannot_pass(self):
+        events, sessions = self.fixture()
+        self.assertIsNone(self.check(events[:5], sessions))
+
+    def test_audit_requires_independent_observation_for_every_call(self):
+        events, sessions = self.fixture()
+        observed = events[-1]
+        called = {"event": "tool_called", "peer": observed["peer"], "tool": observed["tool"],
+                  "arguments": observed["arguments"], "seq": 10}
+        self.assertEqual(tool_audit([*events, called], sessions)["status"], "pass")
+        self.assertEqual(tool_audit([*events, called, called, observed], sessions)["unmatched_relay_calls"], 1)
+
+    def test_schema_probe_rejects_missing_or_unrelated_tool_output(self):
+        old = {"definitions": {"TurnStartParams": {"properties": {"input": {}, "threadId": {}}}}}
+        self.assertFalse(supports_tool_output([old, {"properties": {"toolOutput": {}}}]))
+        old["definitions"]["TurnStartParams"]["properties"]["toolOutput"] = {}
+        self.assertTrue(supports_tool_output([old]))
+        self.assertIsNone(supports_tool_output([{"properties": {"toolOutput": {}}}]))
+
+
+class AdapterEvidenceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temp.name)
+        write_json(self.directory / "run.json", {"tokens": {"grok": "test-only"}})
+        self.events = []
+        def event(kind, **fields):
+            self.events.append({"event": kind, "seq": len(self.events) + 1, **fields})
+        self.client = SimpleNamespace(directory=self.directory, peer="grok", config={"timeout": 180}, event=event)
+        self.adapter = Grok(self.client, "unused")
+        self.adapter.session = "native-session"
+        self.adapter.rpc = SimpleNamespace(request=AsyncMock(return_value={"status": "queued"}))
+
+    async def asyncTearDown(self):
+        self.adapter.trace.close()
+        self.temp.cleanup()
+
+    def message(self):
+        return {"id": "message", "case_id": "case", "sender": "codex", "kind": "challenge", "nonce": "nonce"}
+
+    async def completion(self, turn):
+        await self.adapter.notification("_x.ai/session/update", {"sessionId": "native-session", "update": {
+            "sessionUpdate": "turn_completed", "prompt_id": turn, "stop_reason": "end_turn"}})
+
+    async def test_grok_fallback_remains_pending_until_native_handling_and_completion(self):
+        self.adapter.busy = self.adapter.native_busy = True
+        await self.adapter.deliver(self.message())
+        await self.completion("old-turn")
+        self.assertTrue(self.adapter.busy)
+        await self.adapter.notification("session/update", {"sessionId": "native-session", "update": {
+            "sessionUpdate": "tool_call", "toolCallId": "reply-call", "title": "coord_proof__proof_send",
+            "rawInput": {"case_id": "case", "kind": "reply", "nonce": "nonce"}}})
+        self.assertFalse(self.adapter.pending_interjections)
+        self.assertTrue(self.adapter.busy)
+        await self.completion("fallback-turn")
+        self.assertFalse(self.adapter.busy)
+        # Duplicate terminal signals must not clear a later active turn.
+        await self.adapter.notification("session/update", {"sessionId": "native-session", "update": {
+            "sessionUpdate": "agent_thought_chunk", "content": {"text": ""}}})
+        await self.completion("fallback-turn")
+        self.assertTrue(self.adapter.busy)
+
+    async def test_grok_timeout_is_unknown_activity_and_uses_work_budget(self):
+        self.adapter.rpc.request.side_effect = asyncio.TimeoutError
+        self.adapter.prompts_in_flight = 1
+        await self.adapter.prompt(self.message())
+        self.assertEqual(self.adapter.rpc.request.call_args.kwargs["timeout"], 570)
+        self.assertTrue(self.adapter.busy)
+        self.assertEqual(self.events[-1]["state"], "unknown")
+        self.assertFalse(any(e["event"] == "turn_completed" for e in self.events))
+
+    async def test_grok_rpc_response_without_native_completion_does_not_prove_idle(self):
+        self.adapter.prompts_in_flight = 1
+        self.adapter.native_busy = True
+        await self.adapter.prompt(self.message())
+        self.assertTrue(self.adapter.busy)
+        self.assertEqual(self.events[-1]["state"], "active")
+        self.assertFalse(any(e["event"] == "turn_completed" for e in self.events))
+
+    async def test_grok_rejects_native_session_change(self):
+        with self.assertRaises(ValueError):
+            await self.adapter.notification("session/update", {"sessionId": "different", "update": {}})
+        self.assertEqual(self.events[-1]["event"], "native_identity_error")
+
+    async def test_permission_answers_are_serialized(self):
+        active, maximum = 0, 0
+        async def answer():
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
+            await asyncio.sleep(0.02)
+            active -= 1
+            return "y"
+        self.adapter.permission_answer = answer
+        results = await asyncio.gather(*(self.adapter.request("session/request_permission", {
+            "sessionId": "native-session", "toolCall": {"title": str(i)},
+            "options": [{"kind": "allow_once", "optionId": str(i)}]}) for i in range(3)))
+        self.assertEqual(maximum, 1)
+        self.assertEqual([r["outcome"]["optionId"] for r in results], ["0", "1", "2"])
+
+    async def test_codex_read_command_invalidates_cooperative_evidence(self):
+        self.client.peer = "codex"
+        codex = Codex(self.client, "unused")
+        codex.session = "native-session"
+        try:
+            await codex.notification("item/started", {"threadId": "native-session",
+                "item": {"type": "commandExecution", "id": "read-answer-key"}})
+            self.assertEqual(self.events[-1]["event"], "tool_violation")
+            with self.assertRaises(ValueError):
+                await codex.request("item/tool/call", {"threadId": "changed", "tool": "proof_report"})
+        finally:
+            codex.trace.close()
+
+    async def test_codex_without_required_schema_never_starts_a_session(self):
+        self.client.peer = "codex"
+        codex = Codex(self.client, "unused")
+        codex.spawn = AsyncMock()
+        try:
+            with patch("mhproof.adapters.codex_capability", return_value={"status": "unsupported"}):
+                with self.assertRaises(ValueError):
+                    await codex.start()
+            codex.spawn.assert_not_awaited()
+            self.assertTrue(any(e["event"] == "unsupported" for e in self.events))
+        finally:
+            codex.trace.close()
+
+    async def test_claude_hook_records_actual_identity_and_blocks_nonproof_tools(self):
+        result = claude_hook(self.client, {"session_id": "native-claude", "prompt_id": "p",
+            "hook_event_name": "PreToolUse", "tool_name": "mcp__coord_proof__proof_hold",
+            "tool_input": {"case_id": "held"}, "tool_use_id": "native-call"})
+        self.assertEqual(result, 0)
+        self.assertEqual(self.events[-1]["native_id"], "native-claude")
+        result = claude_hook(self.client, {"session_id": "native-claude", "hook_event_name": "PreToolUse",
+                                          "tool_name": "Read", "tool_input": {}})
+        self.assertEqual(result, 2)
+        self.assertEqual(self.events[-1]["event"], "tool_violation")
+
 
 class RPCTests(unittest.IsolatedAsyncioTestCase):
+    async def test_non_json_stdout_is_a_diagnostic_protocol_failure(self):
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", "print('startup banner', flush=True)",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
+        rpc = RPC(proc, AsyncMock(), AsyncMock())
+        await asyncio.wait_for(rpc.dead.wait(), 3)
+        self.assertIn("Non-JSON data on native protocol stdout", rpc.failure)
+        await rpc.close()
+
     async def test_eof_and_rpc_errors_are_not_success(self):
         async def handler(*args):
             return {}

@@ -20,6 +20,13 @@ class Workload:
         self.emit = emit
         self.batches = json.loads(FIXTURE.read_text())["batches"]
         self.progress = {}
+        self.released_batch = 0
+
+    def release_batch(self, index):
+        if index != self.released_batch + 1 or index >= len(self.batches):
+            raise ValueError("Work batches must be released in order")
+        self.released_batch = index
+        self.emit("work_batch_released", batch=index)
 
     def next(self, peer):
         if peer not in self.progress:
@@ -31,6 +38,8 @@ class Workload:
         index = progress["index"]
         if index == len(self.batches):
             return {"done": True}
+        if index > self.released_batch:
+            raise ValueError("End this turn and await the controller's next batch instruction")
         progress["pending"] = True
         result = {"batch": index, "done": False, "rows": self.batches[index]}
         self.emit("work_batch_issued", peer, batch=index, rows=len(result["rows"]))

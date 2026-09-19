@@ -4,6 +4,7 @@ import shutil
 import sys
 
 from .adapters import run_agent, version
+from .compat import codex_capability
 from .contract import PEERS
 from .mcp import run_mcp
 from .suite import run_suite
@@ -43,6 +44,8 @@ def main(argv=None):
     diagnostics = sub.add_parser("bundle", help="Create a local diagnostic ZIP, excluding run credentials/configs")
     diagnostics.add_argument("--dir", required=True)
     diagnostics.add_argument("--out", required=True, help="New ZIP path (must not exist)")
+    hook = sub.add_parser("claude-hook", help="Internal run-local native identity/tool observer")
+    hook.add_argument("--dir", required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "doctor":
@@ -50,8 +53,14 @@ def main(argv=None):
             for peer in args.peers:
                 binary = shutil.which(peer)
                 found[peer] = {"binary": binary, "version": version(peer, binary) if binary else "not installed"}
+                if peer == "codex" and binary:
+                    found[peer]["tool_output"] = codex_capability(binary)
             print(json.dumps(found, indent=2))
-            return 0 if all(v["binary"] for v in found.values()) else 1
+            return 0 if all(v["binary"] and v.get("tool_output", {"status": "supported"})["status"] == "supported"
+                            for v in found.values()) else 1
+        if args.command == "claude-hook":
+            from .evidence import run_claude_hook
+            return run_claude_hook(args.dir)
         if args.command == "run":
             if len(set(args.peers)) != len(args.peers) or len(args.peers) < 2:
                 parser.error("Select at least two distinct peers")

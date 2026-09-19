@@ -21,8 +21,9 @@ Channels/tool outputs can arrive while you are working; handle them at your
 next opportunity, including after proof_hold returns. A tool returning queued
 does not mean a peer has received anything. Never fabricate success.
 Finish the controller's requested task (which may have several steps), then
-end your turn and await the next message. During a work fixture, handle incoming
-peer messages between batches and continue the work until all batches are done.
+end your turn and await the next message. During a work fixture, solve only the
+single batch requested, then end your turn. The controller releases later batches.
+Handle incoming peer messages at your next opportunity between these turns.
 """
 
 

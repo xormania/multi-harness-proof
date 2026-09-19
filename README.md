@@ -10,7 +10,7 @@ participant stays in one native session throughout the experiment.
 The output is evidence: message traces, verified replies, scored work, and
 diagnostics that explain what succeeded or failed on a particular installation.
 
-> **Experimental:** the initial implementation passes 11 offline tests, including
+> **Experimental:** version 0.2 passes 24 offline tests, including
 > an integration test with simulated harnesses. Live compatibility and actual
 > model behavior remain unverified. See [validation status](VALIDATION.md).
 
@@ -24,11 +24,12 @@ include the remembered marker and a fresh challenge value.
 | --- | --- | ---: |
 | Round trips | Every ordered pair exchanges a challenge and a verified reply in its original sessions. | 6 |
 | Delivery while busy | A message is submitted while the recipient has an outstanding proof-tool call, then receives a verified reply. | 3 |
-| Messages during work | Each agent sends two challenges; submission must overlap the recipient's work and produce a verified reply. | 6 |
+| Messages during work | Each agent sends two challenges while every recipient has an unfinished fixture; each requires a verified reply. | 6 |
 | Work accuracy | Each agent correctly identifies the latest failed job attempts across three build-log batches. | 3 |
 
 The [work fixture](fixtures/README.md) contains 72 synthetic log records per agent,
-including retries and out-of-order entries. It exercises context, tool use, and
+including retries and out-of-order entries. All agents receive the same batches
+and are scored independently. It exercises context, tool use, and
 message handling without requiring changes to a real codebase. The relay
 transports messages; the actual agents must invoke the tools and solve the task.
 
@@ -54,14 +55,17 @@ python3 proof.py doctor
 bash scripts/test.sh
 ```
 
-`doctor` reports executable paths and versions. The tests run offline and make no
-model calls. Account policies and native permission prompts still need to be
-checked during a live run.
+`doctor` reports executable paths and versions and generates a temporary schema
+from the installed Codex binary to check `TurnStartParams.toolOutput`. The Codex
+adapter repeats that check before starting a session. Missing or inconclusive
+schema support stops that launch with a diagnostic. Neither the probe nor the
+tests make model calls. Account policies, native hooks, and permission prompts
+still need to be checked during a live run.
 
 ### First run: messaging
 
 Start with `--no-work`: six round trips and three busy-delivery checks. This
-establishes messaging and context evidence before adding the work fixture.
+checks messaging and retained context before adding the work fixture.
 Choose either tmux or separate terminals below.
 
 #### Launch with tmux
@@ -92,7 +96,9 @@ From the project directory, run each command in its own terminal:
 
 Start the relay first. It also prints absolute-path commands for terminals opened
 elsewhere. Accept Claude's native development-channel prompt when shown, and
-respond to Grok's proof-tool permission prompts in its terminal. Agent messages
+respond to Grok's proof-tool permission prompts in its terminal. Those prompts
+are serialized and may recur for every tool call; there is no blanket approval.
+Agent messages
 then travel between sessions automatically.
 
 **Use a fresh run directory for every attempt.** Existing runs are never
@@ -116,7 +122,10 @@ For separate terminals, use `bash scripts/start.sh runs/live2` and launch each
 agent with `runs/live2` in the commands above. The full suite repeats the messaging
 checks, then adds six messages during work and three work scores. A successful
 first run establishes the messaging baseline; the work stage separately tests
-answer accuracy and whether message delivery actually overlaps ongoing work.
+answer accuracy and message delivery before the fixture is finished. Later
+batches are released by the controller, so a fast agent cannot finish before
+the burst arrives. This measures interleaving with unfinished work, not
+simultaneous computation; busy-tool delivery is a separate check.
 
 ## How coordination works
 
@@ -136,6 +145,21 @@ unrelated existing terminal sessions is outside the current implementation.
 
 The proof records queueing, native submission, and model responses separately.
 **A passing check requires the complete reply and context evidence.**
+
+Native observations independently identify the tools that sent the challenge,
+sent the reply, and reported receipt. Their session IDs must match registration:
+
+| Harness | Native identity and tool evidence | Completion evidence |
+| --- | --- | --- |
+| Codex | `threadId` and `callId` on native `item/tool/call` requests | Native turn events |
+| Claude Code | `session_id` and `tool_use_id` from a run-local `PreToolUse` hook | Run-local `Stop` hook |
+| Grok Build | `sessionId`, `toolCallId`, tool name, and arguments on ACP tool notifications | Native completion notifications plus outstanding requests and interjections |
+
+Relay events label registration as `registered_session_id`; this label is not
+native identity evidence. Missing native observations leave the run unverified.
+Claude's hooks are supplied through a generated run-local `--settings` file.
+Startup requires a ready report with the channel-delivered memory marker and a
+matching native tool observation; an MCP connection alone is insufficient.
 
 ## Results and diagnostics
 
@@ -164,12 +188,25 @@ For example, verified round trips followed by an unsupported Grok busy-delivery
 method remain useful evidence of idle messaging. They do not establish a busy
 delivery pass.
 
+Each message case lists `native_evidence_seqs`. Busy cases also record
+`timing.reply_before_hold_finished` and, where both native turn IDs are available,
+`timing.reply_in_hold_turn`. Work cases record `timing.reply_before_work_completed`.
+These timing observations do not change the round-trip predicate. A later-turn
+reply in the same session is recorded honestly; it does not prove mid-turn handling.
+An unavailable turn comparison is `null`, not a successful comparison.
+
+The overall verdict also requires `tool_audit.status` to pass: each relay tool
+call must have a matching native observation, with distinct native call IDs.
+Observed use of non-proof tools invalidates the run, including automatically
+allowed Codex read commands. This detects violations of the cooperative test;
+it is not an operating-system access boundary.
+
 Local telemetry is enabled for every run:
 
 | Evidence | Files |
 | --- | --- |
-| Verdicts, session IDs, CLI versions, requested settings, and message timings | `report.json` |
-| Ordered routing events, tool reports, work scores, and hold boundaries | `events.jsonl` |
+| Verdicts, session IDs, settings, capability probes, stage, timings, and tool audit | `report.json` |
+| Routing, native identity/tool observations, work gates, scores, and hold boundaries | `events.jsonl` |
 | Native requests, responses, notifications, launch details, timeouts, and exceptions | `codex-trace.jsonl`, `grok-trace.jsonl` |
 | MCP calls, tool arguments/results, and channel notifications | `mcp-claude-trace.jsonl`, `mcp-grok-trace.jsonl` |
 | Harness diagnostics | `codex-stderr.log`, `grok-stderr.log`, `claude-trace.jsonl`, `claude-debug.log` |
@@ -233,7 +270,9 @@ bash scripts/start.sh runs/slow --timeout 300 --startup-timeout 900
 
 The default `--startup-timeout 600` covers participant registration and required
 MCP connections. After that, `--timeout 180` applies to individual readiness and
-verification waits; the work-completion wait allows three times that value.
+verification waits; each work-batch wait allows three times that value. Grok's
+prompt RPC deadline is three times the value plus 30 seconds, so it does not cut
+that work wait short. An RPC timeout records unknown activity, never idle.
 Approve native channel and proof-tool prompts promptly: a prompt that blocks the
 initial ready report is subject to the readiness wait, not a new 600-second wait.
 
@@ -251,7 +290,10 @@ harness configuration, register global MCP servers, copy authentication, or use
 permission-bypass modes. Claude's development-channel flag enables a custom
 channel subject to native confirmation. Claude's built-in tools are disabled,
 Codex uses a read-only sandbox and declines approval requests, and Grok retains
-native permission prompts.
+native permission prompts. Claude's run-local hook rejects non-proof tools;
+Codex and Grok tool observations invalidate the proof if other tools appear.
+Grok's built-in tools are not stripped by this launcher. Scoped Grok allow rules
+have not been adopted without verifying their behavior under `agent stdio`.
 
 Harnesses still use their normal identity and may read existing settings, hooks,
 and ancestor instructions or write their own session history/cache. Use a
@@ -262,12 +304,15 @@ Interpret results within the experiment's measured boundaries:
 
 - **Busy delivery** measures overlap with an outstanding proof-tool call, followed
   by a correct reply. It does not certify interruption during token generation.
-- **Claude idle state** is inferred after completed proof operations and a quiet
-  interval; this adapter does not observe a native idle-state event.
+- **Completion observation** uses Codex turn events, Claude hooks, and Grok
+  completion notifications. Grok interjections can become later prompt turns;
+  outstanding deliveries remain active until native handling and completion
+  evidence arrive. The adapter does not invent native turn-start events from RPCs.
 - **Context retention** is a cooperative task check, not an adversarial test of
   access to other processes or logs.
-- **Work overlap** must actually occur. A round trip after the recipient finishes
-  its task does not pass the message-during-work check.
+- **Work overlap** means submission between fixture start and completion. The
+  burst is synchronized after every first batch, while later batches are gated.
+  It does not demonstrate simultaneous model computation or interruption.
 - **Compatibility** is version-sensitive: the experiment uses preview or
   experimental interfaces and a Grok extension. Unsupported behavior is recorded.
 
@@ -276,10 +321,14 @@ Interpret results within the experiment's measured boundaries:
 | Symptom | First check |
 | --- | --- |
 | Executable missing | Check `PATH`, run `doctor`, or use `agent --binary`. |
-| Claude never becomes ready | Inspect `/mcp`, the channel confirmation, and account/organization channel availability. |
+| Codex schema unsupported or unverified | Inspect `doctor` output; this installed binary must expose `TurnStartParams.toolOutput`. |
+| Claude never becomes ready | Inspect `/mcp`, channel confirmation, native hook execution, and account/organization channel availability. |
 | Grok never becomes ready | Check its terminal for proof-tool permission prompts, confirm xAI Grok Build supports `agent stdio`, and inspect authentication and logs. |
 | Native method or tool missing | Compare the installed CLI with the interface references below. Preserve the failed run. |
 | Message queued without a pass | Follow its ID through submission, reply, and receipt events. |
+| Native evidence missing | Inspect `native_tool` events and IDs; MCP readiness and relay registration cannot substitute for native observations. |
+| Grok never settles | Check completion notifications and pending interjections in `activity` events. An RPC response alone does not prove idle. |
+| Tool audit fails | Inspect `tool_violation` events and unmatched calls; do not use shell/file tools to obtain markers or answers. |
 | Work answer is incorrect | Compare `work_scored` events with the fixture rules; separate answer accuracy from transport. |
 | Run directory already exists | Choose a fresh directory. |
 
@@ -294,8 +343,8 @@ from simulated tests.
 
 The main modules are [adapters](mhproof/adapters.py), [relay](mhproof/relay.py),
 [MCP server](mhproof/mcp.py), [verifier](mhproof/suite.py), and
-[telemetry](mhproof/telemetry.py). Run `python3 scripts/package.py` to build a
-source-only ZIP that excludes generated runs, logs, and diagnostic bundles.
+[telemetry](mhproof/telemetry.py). GitHub is the maintained source; no checked-in
+source ZIP is distributed. Diagnostic bundles remain available for local runs.
 
 ## Interface references
 
@@ -303,9 +352,11 @@ Interfaces reviewed for the initial implementation on **2026-09-19**:
 
 - [Codex app-server](https://developers.openai.com/codex/app-server)
 - [Claude Code channels](https://code.claude.com/docs/en/channels-reference)
+- [Claude Code hook input and configuration](https://code.claude.com/docs/en/hooks)
 - [Grok Build ACP/headless interface](https://docs.x.ai/build/cli/headless-scripting)
 - [Grok Build CLI options](https://docs.x.ai/build/cli/reference)
 - [Grok interjection extension at the reviewed commit](https://github.com/xai-org/grok-build/blob/482711333c7195dc16a272777f86086d615e2afb/crates/codegen/xai-grok-shell/src/extensions/interject.rs)
+- [Grok native completion signals at the reviewed commit](https://github.com/xai-org/grok-build/blob/482711333c7195dc16a272777f86086d615e2afb/crates/codegen/xai-grok-shell/src/session/turn_completion.rs)
 - [ACP session and MCP setup](https://agentclientprotocol.com/protocol/v1/session-setup)
 
 ## License

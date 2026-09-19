@@ -46,7 +46,7 @@ class State:
             record = {"seq": len(self.events) + 1, "time": time.time(), "event": event,
                       "peer": peer, **fields}
             if peer in self.sessions:
-                record["session_id"] = self.sessions[peer]["session_id"]
+                record["registered_session_id"] = self.sessions[peer]["session_id"]
             self.events.append(record)
             self.log.write(json.dumps(self.redactor.value(record), ensure_ascii=False) + "\n")
             self.log.flush()
@@ -81,6 +81,7 @@ class State:
         validate_tool(name, args)
         if peer not in self.sessions:
             raise ValueError("Harness has not registered a session")
+        self.emit("tool_called", peer, tool=name, arguments=args)
         if name == "proof_send":
             return self.enqueue(peer, args["to"], **{k: v for k, v in args.items() if k != "to"})
         if name == "proof_report":
@@ -151,9 +152,10 @@ def serve(state):
                 elif self.path == "/event":
                     allowed = {"submitted", "delivery_error", "unsupported", "adapter_error",
                                "mcp_ready", "turn_started", "turn_completed", "permission_denied",
-                               "session_observed", "adapter_stopped"}
+                               "session_observed", "adapter_stopped", "native_session", "native_tool",
+                               "native_identity_error", "activity", "tool_violation", "protocol_capability"}
                     event = body.pop("event")
-                    if event not in allowed or set(body) & {"peer", "session_id", "seq", "time"}:
+                    if event not in allowed or set(body) & {"peer", "session_id", "registered_session_id", "seq", "time"}:
                         raise ValueError("Invalid adapter event")
                     state.emit(event, peer, **body)
                     if event == "adapter_stopped":
