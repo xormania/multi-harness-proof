@@ -1,12 +1,12 @@
 # Scope and boundaries
 
-This is a small mechanical proof for Agentscient: messages between persistent
+This is a small mechanical proof of messages between persistent
 Codex, Claude Code, and Grok Build sessions, with observable round trips and
 context retention. Keep changes focused on proving those mechanics.
 
 - Work in this repository and generated run directories. Never modify user
   global harness config, authentication, shell profiles, global MCP registries,
-  or the Agentscient repository as part of setup or troubleshooting.
+  or unrelated repositories as part of setup or troubleshooting.
 - Use invocation arguments, native session parameters, or generated run-local
   files for adapter configuration. Never replace a user's existing config.
 - Do not install, upgrade, log in, switch accounts, spend model usage, or start

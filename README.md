@@ -1,289 +1,275 @@
-# Multi-harness coordination proof
+# Multi-Harness Proof
 
-A small standalone experiment for Agentscient. It tests whether **Codex, Claude
-Code, and Grok Build can exchange messages inside persistent native sessions**,
-reply without a human copying messages, and remember earlier conversation state.
+**A local experiment in live coordination between Codex, Claude Code, and Grok Build.**
 
-**Status: implemented; offline protocol tests included. Live compatibility and
-model behavior still need a run on your machine.** None of the three real CLIs
-was available in the build environment. A simulated pass is not a live pass.
+Coding harnesses expose different session, tool, and messaging interfaces. This
+project tests whether agents in those harnesses can exchange messages, retain
+earlier context, and continue useful work through a common local relay. Each
+participant stays in one native session throughout the experiment.
+
+The output is evidence: message traces, verified replies, scored work, and
+diagnostics that explain what succeeded or failed on a particular installation.
+
+> **Experimental:** the initial implementation passes 11 offline tests, including
+> an integration test with simulated harnesses. Live compatibility and actual
+> model behavior remain unverified. See [validation status](VALIDATION.md).
+
+## What gets tested
+
+The default three-harness run performs **15 message checks and three work scores**.
+Each participant first receives a distinct context marker. Later replies must
+include the remembered marker and a fresh challenge value.
+
+| Check | Required evidence | Count |
+| --- | --- | ---: |
+| Round trips | Every ordered pair exchanges a challenge and a verified reply in its original sessions. | 6 |
+| Delivery while busy | A message is submitted while the recipient has an outstanding proof-tool call, then receives a verified reply. | 3 |
+| Messages during work | Each agent sends two challenges; submission must overlap the recipient's work and produce a verified reply. | 6 |
+| Work accuracy | Each agent correctly identifies the latest failed job attempts across three build-log batches. | 3 |
+
+The [work fixture](fixtures/README.md) contains 72 synthetic log records per agent,
+including retries and out-of-order entries. It exercises context, tool use, and
+message handling without requiring changes to a real codebase. The relay
+transports messages; the actual agents must invoke the tools and solve the task.
 
 ## Quick start
 
-Requires **Python 3.10+**, Linux/macOS/WSL, and installed, authenticated `codex`,
-`claude`, and **xAI Grok Build's** `grok`. Python has no extra dependencies.
-This project does not install or update harnesses or change your login.
+### Requirements
 
-From the extracted ZIP or cloned repository:
+- Python **3.10+** on Linux, macOS, or WSL. No additional Python packages are required.
+- Installed and authenticated **Codex**, **Claude Code**, and **xAI Grok Build** CLIs,
+  available as `codex`, `claude`, and `grok` in the current shell.
+- Claude Code support for custom development channels on your installation/account.
+- Optional: `tmux` to open the relay and three harness windows together.
+
+The launcher uses existing installations and authentication. It does not install
+or upgrade harnesses. Runs with two participants are also supported.
+
+### Get the project
 
 ```bash
+git clone https://github.com/xormania/multi-harness-proof.git
+cd multi-harness-proof
 python3 proof.py doctor
-bash scripts/test.sh                 # offline; no model calls
-bash scripts/start.sh runs/first     # starts relay, prints three commands
+bash scripts/test.sh
 ```
 
-Leave that terminal running. In three more terminals, from this repository:
+Alternatively, download the [source ZIP](downloads/multi-harness-proof.zip) and
+run the last two commands from the extracted project directory. `doctor` reports
+executable paths and versions. The tests run offline and make no model calls.
 
-```bash
-bash scripts/agent.sh codex runs/first
-bash scripts/agent.sh claude runs/first
-bash scripts/agent.sh grok runs/first
-```
-
-Each command goes in its **own terminal**. The relay also prints absolute-path
-commands you can use from any directory. Use a **new run directory** each time.
-The test starts automatically when all selected peers and their tools are ready.
-
-Claude opens its normal TUI. Accept its native development-channel prompt and
-workspace trust prompt if shown. Grok permission requests appear in its terminal;
-approve the named proof tools once when prompted. You never need to copy agent
-messages between terminals. Normal model usage/subscription limits apply.
-
-**Optional, if you already use tmux:**
+### Launch with tmux
 
 ```bash
 bash scripts/tmux.sh
 ```
 
-This creates one new tmux session with relay, codex, claude, and grok windows,
-initially showing Claude so you can accept the channel prompt. Use `Ctrl-b w`
-to switch windows. It does not edit tmux's global configuration. Close the
-proof's tmux session when finished; existing tmux sessions are untouched.
+This creates a fresh run directory and a new tmux session with **relay**, **codex**,
+**claude**, and **grok** windows. It opens the Claude window first for its native
+development-channel and workspace prompts. Use `Ctrl-b w` to switch windows, and
+check Grok's window for any permission prompts for the proof tools.
 
-## What it checks
+The experiment starts automatically when all participants and tools are ready.
+Watch the relay window for results and the run directory. The helper changes
+settings only for the tmux session/windows it creates.
 
-1. Each harness starts one native session and receives a distinct private memory
-   value. It must acknowledge that value through a proof tool.
-2. Every ordered pair exchanges a fresh challenge and reply: six round trips
-   with three harnesses. The recipient must return its previously supplied memory
-   value. The sender must report the reply it actually received.
-3. Each recipient then enters a blocking `proof_hold` tool. Another agent sends
-   a challenge while that tool is outstanding. The controller releases the hold
-   after native delivery is submitted, then requires the same verified reply.
-4. All agents triage three small batches of synthetic build logs concurrently.
-   They must account for retried jobs and report the latest failures correctly.
-   Each sends a two-message burst after its first batch, handles incoming
-   messages, and completes the remaining work. The controller scores the work
-   and checks whether each message submission overlapped the recipient's work.
+### Launch in separate terminals
 
-That's **15 message checks and three work scores**, plus onboarding, for three peers. The code
-routes messages; the actual models must invoke the send/report tools correctly.
-The private value is not reinserted into later challenges. The harness session
-stays the same throughout the run.
+From the project directory, run each command in its own terminal:
 
-The work fixture is 72 short records per agent, split into three batches. Its
-inputs and rules are in `fixtures/`. It creates a little pressure on context and
-tool/message handling without running code or touching a real project. A work
-pass requires correct answers and observed message/work overlap; if a recipient
-finishes too quickly for overlap, that is reported as unverified, not a pass.
-Use `--no-work` on `run` to isolate the nine baseline message checks.
+| Terminal | Command |
+| --- | --- |
+| Relay | `bash scripts/start.sh runs/first` |
+| Codex | `bash scripts/agent.sh codex runs/first` |
+| Claude | `bash scripts/agent.sh claude runs/first` |
+| Grok | `bash scripts/agent.sh grok runs/first` |
 
-A busy pass means **submission overlapped a real outstanding proof tool call,
-followed by a correct model reply**. It does not mean a model was interrupted
-mid-token, or that every arbitrary tool can be interrupted. Claude channels do
-not expose native idle-state observations here; round trips start after completed
-proof operations and a brief quiet interval. Codex and Grok expose turn boundaries.
+Start the relay first. It also prints absolute-path commands for terminals opened
+elsewhere. Accept Claude's native development-channel prompt when shown, and
+respond to Grok's proof-tool permission prompts in its terminal. Agent messages
+then travel between sessions automatically.
 
-## Native interfaces
+**Use a fresh run directory for every attempt.** Existing runs are never
+overwritten or silently resumed. With no directory argument, `scripts/start.sh`
+chooses a new name under `runs/`.
 
-| Harness | Persistent session | Incoming peer messages | Outgoing tools |
+## How coordination works
+
+A Python relay listens on the loopback interface and maintains an inbox for each
+participant. Adapters handle polling and native delivery. Models receive messages
+through their harnesses and use proof tools to reply, report results, and work.
+
+| Harness | Persistent session | Incoming messages | Outgoing proof tools |
 | --- | --- | --- | --- |
-| Codex | `codex app-server --listen stdio://`, one thread | `turn/start.toolOutput`; idle start or active-turn queue | Session-scoped dynamic tools |
-| Claude Code | Native TUI, explicit `--session-id` | MCP `notifications/claude/channel` | Stdio MCP tools |
-| Grok Build | `grok --no-auto-update agent stdio`, one ACP session | `session/prompt` when idle; `_x.ai/interject` when active | Stdio MCP tools |
+| Codex | App-server; one thread | `turn/start.toolOutput` | Session-scoped dynamic tools |
+| Claude Code | Native terminal UI; explicit session ID | MCP `notifications/claude/channel` | Stdio MCP |
+| Grok Build | ACP over stdio; one session | `session/prompt` when idle; `_x.ai/interject` when active | Stdio MCP |
 
-These are **new sessions launched by this proof**, kept alive across messages.
-Codex and Grok terminals show adapter output, not their native TUIs. Attaching to
-unrelated already-running TUI sessions is outside this experiment. MCP by itself
-is not used as a universal push mechanism: each adapter handles inbound delivery.
+The launcher creates new sessions and keeps them alive across messages. Codex and
+Grok display adapter output; Claude uses its native terminal UI. Attaching to
+unrelated existing terminal sessions is outside the current implementation.
 
-The Codex dynamic-tool and tool-output APIs and Grok interjection extension can
-vary by CLI build. Claude custom channels are a preview feature. A missing method,
-policy block, unconsumed message, or incorrect model response remains unverified
-or unsupported. There are no silent API/model substitutions or blind retries.
+The proof records queueing, native submission, and model responses separately.
+**A passing check requires the complete reply and context evidence.**
 
-## Results and stopping
+## Results and diagnostics
 
-Watch the relay terminal, then inspect:
+For the manual example above:
 
 ```bash
 cat runs/first/report.json
-```
-
-`report.json` contains the overall verdict, case verdicts, evidence event numbers,
-native session IDs, reported CLI versions, and round-trip times. `events.jsonl`
-records queueing, adapter submissions, tool reports, and hold boundaries.
-Codex/Grok stderr goes to their respective run-local log files. Timing measures
-this experiment's round trips, not model quality or a stable performance benchmark.
-
-Detailed local telemetry is enabled on every run:
-
-| File | Contents |
-| --- | --- |
-| `manifest.json` | Python/platform, selected peers, timeouts, SHA-256 of the proof source |
-| `events.jsonl` | Ordered routing, tool reports, session/turn events, holds, HTTP errors |
-| `codex-trace.jsonl`, `grok-trace.jsonl` | Native requests/responses/notifications, launch argv/cwd/PID, stderr, timeouts, exceptions, exit codes |
-| `mcp-claude-trace.jsonl`, `mcp-grok-trace.jsonl` | MCP initialization, tools, tool arguments/results, channel messages |
-| `claude-trace.jsonl`, `claude-debug.log` | Claude launch/exit and native debug output |
-
-Traces are flushed after each entry and have wall-clock and monotonic timestamps.
-They retain available native usage/model metadata as it appears on the wire;
-there is no universal cost or reasoning-setting measurement. Claude TUI text is
-not screen-scraped. No telemetry is uploaded automatically, and the proof does
-not collect environment values or read global configuration files.
-
-After a run, make one diagnostic ZIP:
-
-```bash
 python3 proof.py bundle --dir runs/first --out first-diagnostics.zip
 ```
 
-The bundle includes only named diagnostic files. It excludes `run.json`, MCP
-configuration, and workspaces; it redacts run tokens and known credential values.
-Structured protocol traces also redact credential fields when written. Claude's
-native debug file is produced by Claude itself; bundling redacts known secrets
-but cannot guarantee removal of every possible sensitive string. Inspect a bundle
-before sharing it: test prompts, replies, and local paths are intentionally kept.
-The bundle command writes a local ZIP only and refuses to overwrite an existing one.
+For a tmux run, substitute the directory printed by the launcher.
 
-- `pass`: the complete evidence chain matched the nonce, context value, and
-  original session IDs. Busy cases also require the observed hold overlap.
-- `unverified`: missing/incorrect evidence, timeout, launch error, or interruption.
-- `unsupported` on a case: an adapter received a native method-not-found error.
+| Result | Meaning |
+| --- | --- |
+| `pass` | All required evidence for that check matched. |
+| `unverified` | Evidence was missing or incorrect, a timeout occurred, or the run was interrupted. |
+| `unsupported` | A message case encountered a native method-not-found error. |
+| `incorrect` | An agent submitted an incorrect work-fixture answer. |
 
-The runner stops at the first incomplete check and reports how many checks were
-not run. Earlier passes remain visible. This is a diagnosis aid; an incomplete
-run is not a verdict that multi-harness coordination is impossible.
+The overall run passes only when all selected checks pass. On an incomplete
+stage, the runner preserves earlier results and reports how many message cases
+were not run. Diagnose incomplete runs using the evidence: launch errors, model
+behavior, account policy, and transport compatibility are different failure modes.
 
-`Ctrl-C` in the relay writes an incomplete report and releases pending holds.
-Codex/Grok wrappers then exit; use `/exit` in Claude. For a hung harness you can
-also use `Ctrl-C` in its own terminal. Do not restart a peer inside an existing
-run: registration is intentionally single-use. Start a new run instead.
+Local telemetry is enabled for every run:
 
-## Options
+| Evidence | Files |
+| --- | --- |
+| Verdicts, session IDs, CLI versions, requested settings, and message timings | `report.json` |
+| Ordered routing events, tool reports, work scores, and hold boundaries | `events.jsonl` |
+| Native requests, responses, notifications, launch details, timeouts, and exceptions | `codex-trace.jsonl`, `grok-trace.jsonl` |
+| MCP calls, tool arguments/results, and channel notifications | `mcp-claude-trace.jsonl`, `mcp-grok-trace.jsonl` |
+| Harness diagnostics | `codex-stderr.log`, `grok-stderr.log`, `claude-trace.jsonl`, `claude-debug.log` |
+| Runtime information and hashes of the proof source and fixture | `manifest.json` |
 
-Start with only two installed peers:
+Protocol traces are flushed after each entry and include wall-clock and monotonic
+timestamps. Native usage/model metadata is retained when the harness exposes it.
+The report records requested settings; effective settings require native evidence.
 
-```bash
-bash scripts/start.sh runs/two --peers codex grok
-# In separate terminals:
-bash scripts/agent.sh codex runs/two
-bash scripts/agent.sh grok runs/two
-```
+The diagnostic bundle is a local ZIP; nothing is uploaded automatically. It
+excludes run credentials, generated MCP configuration, and workspaces, and
+redacts known credential values. **Review a bundle before sharing it publicly:**
+test prompts, responses, and local paths are intentionally retained, and native
+debug output may contain sensitive strings that redaction does not recognize.
 
-Launchers use a small **economy preset** by default:
+To stop, press `Ctrl-C` in the relay. It saves an incomplete report and releases
+pending holds. Codex/Grok wrappers exit; close Claude with `/exit`. If a harness
+hangs, interrupt it in its own terminal. Start a fresh run to retry.
 
-| Peer | Requested model | Requested reasoning |
+## Models and run options
+
+The default profile is named `economy` in the CLI and requests these starting
+settings:
+
+| Participant | Requested model | Requested reasoning |
 | --- | --- | --- |
 | Codex | `gpt-5.6-luna` | `low` |
-| Claude | `haiku` | Not overridden; no added reasoning setting |
-| Grok | Existing Grok model | `low` |
+| Claude Code | `haiku` | No override |
+| Grok Build | Existing Grok model selection | `low` |
 
-This is a practical starting point, not an automatic cheapest-price selector.
-Grok's available models depend on your installation/account; choose your light
-model with `--model` if its current default is heavier than you want. These
-settings are passed to the new session, never saved globally. No premium fast
-service tier is requested. Model IDs and supported effort levels can change.
+Model choice is independent of harness identity. Different models and reasoning
+levels can help distinguish task-following failures from transport failures.
+Availability and supported effort levels depend on the installation/account;
+the initial defaults have not yet been verified in live runs.
 
-Override model/reasoning for an invocation:
+Use separate terminals for custom settings. Each command below is an alternative
+launch for its participant, not an additional participant in the same run:
 
 ```bash
 bash scripts/agent.sh claude runs/first --model sonnet --reasoning low
-bash scripts/agent.sh codex runs/first --model YOUR_CODEX_MODEL --reasoning low
-bash scripts/agent.sh grok runs/first --model YOUR_GROK_MODEL --reasoning low
+bash scripts/agent.sh grok runs/first --profile existing
+bash scripts/agent.sh codex runs/first --binary /path/to/codex
 ```
 
-Use `--profile existing` on an agent command to retain that harness's normal
-model/reasoning defaults. Explicit overrides still work with that profile.
-Grok receives model/effort CLI arguments before `agent stdio`; the protocol trace
-retains whatever model state the native harness advertises. The report records
-the requested model or "harness default" and reasoning override; it does not claim
-to have observed the exact resolved model/reasoning settings. This proof makes
-no CO/XO/worker/model routing decisions.
+`--model` and `--reasoning` are available for all adapters. `--profile existing`
+leaves model/reasoning defaults to the harness unless explicitly overridden.
+Settings are passed through invocation arguments or native session parameters.
 
-Other options:
+Other run options:
 
 ```bash
-python3 proof.py run --dir runs/slow --timeout 300 --startup-timeout 900
-bash scripts/agent.sh grok runs/slow --binary /absolute/path/to/grok
-PROOF_PYTHON=/path/to/python3 bash scripts/start.sh runs/custom
+# Two participants: launch only Codex and Grok against this run directory.
+bash scripts/start.sh runs/two --peers codex grok
+
+# Isolate round-trip and busy-delivery checks from the work fixture.
+bash scripts/start.sh runs/messages --no-work
+
+# Allow longer per-step and startup waits.
+bash scripts/start.sh runs/slow --timeout 300 --startup-timeout 900
 ```
 
-Timeouts are per step; authentication and model/tool failures can consume them.
-The tmux helper is the all-three/economy-preset shortcut; use separate terminals
-for custom peers, models, or binary paths.
+Set `PROOF_PYTHON=/path/to/python3` when using the Bash scripts to select another
+Python interpreter. The tmux helper uses all three participants and the default
+profile. See `python3 proof.py --help` for the CLI entry points.
 
-## Configuration and boundaries
+## Configuration and limits
 
-The proof writes its own files **only below the selected run directory**:
-relay credentials, evidence, per-peer working directories, and `claude-mcp.json`.
-Codex tools are passed in `thread/start`; Grok MCP configuration in `session/new`;
-Claude configuration through `--mcp-config --strict-mcp-config`.
+Setup uses generated run files and session arguments. It does not edit global
+harness configuration, register global MCP servers, copy authentication, or use
+permission-bypass modes. Claude's development-channel flag enables a custom
+channel subject to native confirmation. Claude's built-in tools are disabled,
+Codex uses a read-only sandbox and declines approval requests, and Grok retains
+native permission prompts.
 
-There are no global config edits, global MCP registration, package installations,
-credential copying, or permission-bypass flags in this project. Claude's required
-`--dangerously-load-development-channels` flag enables a **custom development
-channel**; it is not `--dangerously-skip-permissions`. The proof permits only its
-proof MCP tools in Claude and disables Claude's built-in tools. Codex uses a
-read-only sandbox and declines approval requests. Grok retains local permission
-prompts. Peer messages cannot approve permissions.
+Harnesses still use their normal identity and may read existing settings, hooks,
+and ancestor instructions or write their own session history/cache. Use a
+standalone checkout with an appropriate surrounding environment. This proof
+does not provide OS isolation between agents running as the same user.
 
-Harnesses still run with your normal identity and may read their normal settings
-and write their own normal session history/cache. This is **not an OS isolation
-sandbox** and does not promise that a third-party CLI or an existing hook has no
-side effects. Run from an expendable checkout if that matters for your setup.
-Do not place the checkout inside a sensitive project whose ancestor instructions
-you do not want the harnesses to inherit.
+Interpret results within the experiment's measured boundaries:
 
-Run tokens protect a loopback HTTP listener from accidental unauthenticated use.
-They are not isolation between agents running as the same OS user. Memory checks
-assume cooperative agents following the prompt, not agents trying to read logs.
-Run folders contain transcripts/test markers and machine-specific paths; keep
-them local. They are excluded from Git and the source ZIP.
+- **Busy delivery** measures overlap with an outstanding proof-tool call, followed
+  by a correct reply. It does not certify interruption during token generation.
+- **Claude idle state** is inferred after completed proof operations and a quiet
+  interval; this adapter does not observe a native idle-state event.
+- **Context retention** is a cooperative task check, not an adversarial test of
+  access to other processes or logs.
+- **Work overlap** must actually occur. A round trip after the recipient finishes
+  its task does not pass the message-during-work check.
+- **Compatibility** is version-sensitive: the experiment uses preview or
+  experimental interfaces and a Grok extension. Unsupported behavior is recorded.
 
-`AGENTS.md` records development boundaries; `CLAUDE.md` points Claude developers
-to it. Static `.codex`, `.grok`, and `.claude` directories are intentionally
-unnecessary: this experiment's settings belong to the launched test sessions.
+## Troubleshooting and contributing
 
-## Troubleshooting
-
-| Symptom | Check |
+| Symptom | First check |
 | --- | --- |
-| `doctor` says not installed | Confirm PATH in this shell or supply `--binary`; install/authenticate separately using vendor instructions. |
-| Claude never reports ready | Accept the development-channel prompt, check `/mcp`, and confirm your account/organization allows channels. Do not bypass an org policy. |
-| Grok never reports ready | Confirm this is xAI Grok Build with `agent stdio`, a valid existing login or `XAI_API_KEY`, and inspect its stderr log. |
-| Tool/method missing in Codex | Check the installed app-server build against the interfaces below. Experimental schemas can change; retain the failed report. |
-| Busy Grok case is unsupported | The build lacks `_x.ai/interject`. Idle ACP prompts alone do not prove busy delivery. |
-| Queued but no pass | Look for the matching `submitted`, reply, and `report` events. Queuing alone is not delivery. |
-| Run directory exists | Choose a fresh name; the proof deliberately does not overwrite prior evidence. |
+| Executable missing | Check `PATH`, run `doctor`, or use `agent --binary`. |
+| Claude never becomes ready | Inspect `/mcp`, the channel confirmation, and account/organization channel availability. |
+| Grok never becomes ready | Confirm xAI Grok Build supports `agent stdio`, authentication is valid, and inspect its logs. |
+| Native method or tool missing | Compare the installed CLI with the interface references below. Preserve the failed run. |
+| Message queued without a pass | Follow its ID through submission, reply, and receipt events. |
+| Work answer is incorrect | Compare `work_scored` events with the fixture rules; separate answer accuracy from transport. |
+| Run directory already exists | Choose a fresh directory. |
 
-## Development and source references
+For a reproducible issue, include CLI versions, requested model/reasoning settings,
+the failing case, and a reviewed diagnostic excerpt. Use the
+[issue tracker](https://github.com/xormania/multi-harness-proof/issues).
 
-`mhproof/contract.py` contains the prompt and tool schemas; `adapters.py` the native
-interfaces; `mcp.py` the small MCP/channel server; `relay.py` message routing;
-`suite.py` the verifier; `telemetry.py` traces and diagnostic bundling.
-`tests/fake_harness.py` is explicitly a deterministic
-wire fixture. Offline tests exercise all three adapter paths and concurrent
-delivery with fake harnesses, plus negative verdict cases. They cannot certify
-vendor compatibility, authentication, account policy, or actual model behavior.
-See `VALIDATION.md` for the initial checks. Rebuild a source-only ZIP with
-`python3 scripts/package.py`; it excludes runs, logs, and diagnostic bundles.
+Contributions that improve native compatibility, diagnostics, or reproducibility
+are welcome. Read [AGENTS.md](AGENTS.md), keep changes focused on the proof, and
+run `bash scripts/test.sh` after protocol changes. Identify live results separately
+from simulated tests.
 
-Interfaces checked on 2026-09-19:
+The main modules are [adapters](mhproof/adapters.py), [relay](mhproof/relay.py),
+[MCP server](mhproof/mcp.py), [verifier](mhproof/suite.py), and
+[telemetry](mhproof/telemetry.py). Run `python3 scripts/package.py` to build a
+source-only ZIP that excludes generated runs, logs, and diagnostic bundles.
 
-- [Codex app-server](https://developers.openai.com/codex/app-server), including
-  dynamic tools, initialization, and `turn/start.toolOutput`.
-- [Codex model selection](https://developers.openai.com/codex/models), including
-  the ChatGPT-authenticated replacement of GPT-5.4 mini with GPT-5.6 Luna.
-- [Codex dynamic-tool schema](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/typescript/v2/DynamicToolSpec.ts).
-- [Claude channels reference](https://code.claude.com/docs/en/channels-reference)
-  and [CLI reference](https://code.claude.com/docs/en/cli-reference).
-- [Grok ACP/headless documentation](https://docs.x.ai/build/cli/headless-scripting).
-- [Grok CLI model/effort flags](https://docs.x.ai/build/cli/reference).
-- [Grok interjection implementation at a reviewed commit](https://github.com/xai-org/grok-build/blob/482711333c7195dc16a272777f86086d615e2afb/crates/codegen/xai-grok-shell/src/extensions/interject.rs).
-- [ACP session/MCP setup](https://agentclientprotocol.com/protocol/v1/session-setup).
+## Interface references
 
-This is an independent proof project for possible later integration with
-[Agentscient](https://github.com/uscient/agentscient). It does not modify or depend
-on Agentscient. It adds no role hierarchy, benchmark registry, or orchestration
-framework. The existing repository's MIT license is preserved.
+Interfaces reviewed for the initial implementation on **2026-09-19**:
+
+- [Codex app-server](https://developers.openai.com/codex/app-server)
+- [Claude Code channels](https://code.claude.com/docs/en/channels-reference)
+- [Grok Build ACP/headless interface](https://docs.x.ai/build/cli/headless-scripting)
+- [Grok Build CLI options](https://docs.x.ai/build/cli/reference)
+- [Grok interjection extension at the reviewed commit](https://github.com/xai-org/grok-build/blob/482711333c7195dc16a272777f86086d615e2afb/crates/codegen/xai-grok-shell/src/extensions/interject.rs)
+- [ACP session and MCP setup](https://agentclientprotocol.com/protocol/v1/session-setup)
+
+## License
+
+[MIT](LICENSE). Maintained by [xormania](https://github.com/xormania).
