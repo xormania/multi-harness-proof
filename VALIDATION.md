@@ -7,6 +7,27 @@ set of messaging checks during work. The full fixture verdict remains unverified
 because of work errors and repeated-run message handling failures. See
 [LIVE_RESULTS.md](LIVE_RESULTS.md) for versions, evidence, and limits.
 
+## Version 0.4.1 tmux startup correction
+
+An operator's 0.4.0 launch stopped with `no such session: =mhproof-...` before the
+controller or agent sessions launched. The diagnostic archive was retained. Source
+inspection confirms that option commands use `CMD_FIND_PANE`; without a colon,
+`=session` is treated as a pane expression. Both owner-option calls now use
+`=session:`. Session-only commands retain their existing exact-name targets.
+See tmux's [target parser](https://github.com/tmux/tmux/blob/3.4/cmd-find.c) and
+[set-option command definition](https://github.com/tmux/tmux/blob/3.4/cmd-set-option.c).
+
+**Verification:** 98 tests collected in 193.984 seconds: **96 passed, two
+explicitly skipped**. The command-contract regression fails against the 0.4.0
+implementation with the reported error and passes after the correction.
+
+Two real-tmux integration
+checks cover ownership and unrelated-session preservation on a private socket.
+For this verification, tmux 3.3a was available in an isolated temporary directory,
+but the host denied Unix-domain sockets with `EPERM`; both native checks explicitly
+skip. This is not a real-tmux pass. The production correction still needs the
+operator's next local launch.
+
 ## Verified locally
 
 - Version 0.4.0: **95 offline tests passed** in 194.538 seconds, including 24

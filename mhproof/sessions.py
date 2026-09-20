@@ -36,13 +36,15 @@ class Tmux:
         return result.stdout.strip()
 
     def owned(self, record):
-        actual = self.call("show-options", "-qv", "-t", "=" + record["session"], "@mhproof_owner", check=False)
+        # Option commands parse target-pane. The colon makes the exact session
+        # component explicit; a bare '=name' is otherwise parsed as a pane.
+        actual = self.call("show-options", "-qv", "-t", "=" + record["session"] + ":", "@mhproof_owner", check=False)
         return actual == record["owner"]
 
     def create(self, record):
         pane = self.call("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", record["session"],
                          "-n", "dashboard", "-c", ROOT, sys.executable, "-c", "import time; time.sleep(60)")
-        self.call("set-option", "-t", "=" + record["session"], "@mhproof_owner", record["owner"])
+        self.call("set-option", "-t", "=" + record["session"] + ":", "@mhproof_owner", record["owner"])
         self.call("set-option", "-w", "-t", pane, "remain-on-exit", "on")
         self.call("set-option", "-w", "-t", pane, "automatic-rename", "off")
         self.call("set-option", "-w", "-t", pane, "allow-rename", "off")

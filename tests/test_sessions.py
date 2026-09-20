@@ -222,6 +222,33 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(tmux.finish_peer(record, "claude", "%5", self.root)["status"],
                              "already-closed-or-unowned")
 
+    def test_tmux_option_target_contract_and_ownership(self):
+        # tmux option commands use CMD_FIND_PANE: a bare '=session' is a
+        # pane expression. ':', '$id', or an existing pane must select a session.
+        record = {"session": "proof-test", "owner": "test-owner"}
+        calls = []
+        def native(argv, **kwargs):
+            calls.append(argv)
+            command = argv[1]
+            if command == "new-session":
+                return subprocess.CompletedProcess(argv, 0, "%77\n", "")
+            if command in {"set-option", "show-options"}:
+                target = argv[argv.index("-t") + 1]
+                if target not in {"=proof-test:", "%77"}:
+                    return subprocess.CompletedProcess(argv, 1, "", "no such session: " + target)
+                output = "test-owner\n" if command == "show-options" else ""
+                return subprocess.CompletedProcess(argv, 0, output, "")
+            if command == "kill-session":
+                self.assertEqual(argv[-1], "=proof-test")
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            self.fail("Unexpected tmux command: " + command)
+        with patch.object(sessions.subprocess, "run", side_effect=native):
+            tmux = sessions.Tmux()
+            self.assertEqual(tmux.create(record), "%77")
+            self.assertTrue(tmux.owned(record))
+            tmux.close(record)
+        self.assertTrue(any(argv[1] == "kill-session" for argv in calls))
+
     def test_missing_tmux_does_not_mask_error_or_skip_collection(self):
         with patch.object(sessions, "preflight", side_effect=ValueError("tmux is not installed")), \
                 patch.object(sessions.subprocess, "run", side_effect=FileNotFoundError("tmux")), \

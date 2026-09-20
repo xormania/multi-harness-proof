@@ -15,8 +15,9 @@ diagnostics that explain what succeeded or failed on a particular installation.
 > message handling exposed separate failures; the full live fixture suite remains
 > unverified. [Read the evidence and limits](LIVE_RESULTS.md).
 >
-> **Version 0.4.0** adds managed tmux runs, automatic names and diagnostic ZIPs,
+> **Version 0.4.1** includes managed tmux runs, automatic names and diagnostic ZIPs,
 > saved-plan reruns, clearer partial results, and Luna/Sonnet/Grok 4.5 defaults.
+> It also fixes the 0.4.0 tmux startup target error.
 > [Validation status](VALIDATION.md) distinguishes mocked coverage from live results.
 
 ## What gets tested

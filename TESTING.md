@@ -156,3 +156,24 @@ collection preserves earlier archives. See [OPERATIONS.md](OPERATIONS.md).
 
 Public live observations, including a successful baseline and failed repeated
 fixture handling, are documented separately in [LIVE_RESULTS.md](LIVE_RESULTS.md).
+
+## Native tmux regression checks
+
+`tests/test_tmux.py` runs the production tmux methods against real tmux on a
+private socket with `/dev/null` as its configuration. It launches only sleeping
+Python processes, exercises owned session/window setup, selection, capture, and
+cleanup, and checks that a similarly named unrelated session survives. It never
+uses the default tmux server or launches vendor harnesses.
+
+These two tests are automatically included in `scripts/test.sh`. They explicitly
+skip when tmux is absent or the host forbids private Unix sockets. An additional
+always-on command-contract test covers the 0.4.0 target-parser failure: option
+commands need an explicit session component, while session commands accept the
+bare exact-session target. The older process lifecycle fake did not cover this
+native parsing boundary.
+
+To run only the real-tmux checks on an installation that permits local sockets:
+
+```bash
+python3 -m unittest discover -s tests -p test_tmux.py -v
+```

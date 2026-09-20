@@ -145,3 +145,20 @@ The new supervisor is tested with real project processes and fake vendor
 executables plus a simulated tmux lifecycle. Real tmux interaction and the new
 model combination still need a local live run. Existing manual launchers remain
 available; their model default stays `economy` for reproducibility.
+
+## Version 0.4.0 startup target error
+
+If startup reports `tmux: no such session: =mhproof-...`, update to 0.4.1 and
+start a fresh run:
+
+```bash
+git pull --ff-only
+bash scripts/proof.sh start
+```
+
+Version 0.4.0 used a bare exact-session name for `set-option` and `show-options`,
+whose target parser expects a pane expression. Version 0.4.1 supplies the explicit
+session component (`=session:`). Session commands still use `=session`; ownership
+checks and permission handling are unchanged. The failure precedes controller
+and agent-session launch. Keep the failed directory and its diagnostic ZIP; no reclone
+or deletion of run data is needed.
