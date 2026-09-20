@@ -163,4 +163,9 @@ def claude_hook(client, packet):
 def run_claude_hook(directory):
     from .relay import Client
     packet = json.load(sys.stdin)
+    # Capture failure is diagnostic, never approval or proof evidence. Save the
+    # run's native transcript even when the relay has already shut down.
+    from .capture import capture_claude
+    if packet.get("hook_event_name") in {"SessionStart", "Stop", "StopFailure"}:
+        capture_claude(directory, packet)
     return claude_hook(Client(directory, "claude"), packet)

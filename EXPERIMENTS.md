@@ -4,7 +4,8 @@ A configuration describes the coordination plan and launch settings. Each
 invocation creates a fresh timestamped directory with a random suffix, preserves
 the input configuration and resolved defaults, copies the work fixture, and
 retains all reports and telemetry. Editing the configuration and rerunning never
-overwrites previous evidence. There is no automatic cleanup or retry.
+overwrites previous evidence. Evidence is never automatically deleted and delivered messages are not retried.
+The optional managed launcher closes only its own finished harness windows.
 
 ## Start with the supplied mock experiment
 
@@ -70,7 +71,8 @@ Pairs are `[source, target]`. `"all"` selects every ordered round-trip pair and
 must be unique, with different peers. At least one coordination stage is required.
 Work bursts follow the selected peer order in a ring, with 1–64 challenges per
 peer. Later batches remain gated until the burst has been submitted. Each failed
-stage still stops that proof; changing the plan never weakens the pass predicate.
+stage still stops that proof; all exchanges already launched in a work burst are
+independently evaluated and retained. Changing the plan never weakens the pass predicate.
 
 For example, two round trips, one busy check, and six work messages per peer with
 three peers produce 21 message cases, plus three work scores. Repeating the
@@ -167,15 +169,25 @@ binary paths can be changed centrally in `agents`:
 ```json
 "agents": {
   "codex": {"profile": "existing", "model": "YOUR_MODEL", "reasoning": "low"},
-  "claude": {"profile": "existing", "model": "haiku"},
+  "claude": {"profile": "coordination", "model": "sonnet", "reasoning": "low"},
   "grok": {"profile": "existing", "binary": "/path/to/grok", "reasoning": "low"}
 }
 ```
 
-`economy` remains the default profile. An explicit `null` model/reasoning removes
+`coordination` requests Luna, Sonnet, and Grok 4.5 with low reasoning. It is the
+managed launcher's default and is explicit in the shipped live example.
+`economy` remains the default when a general experiment plan omits the profile. An explicit `null` model/reasoning removes
 that override. Command-line agent flags can override snapshot launch requests;
 the actual requested values and binary are recorded with registration, so compare
 those records too. Authentication and native channel/permission prompts remain
-interactive. The existing tmux helper runs the standard plan; configured live
-experiments use the printed separate-terminal commands. Mock fault rules are
-rejected in live configurations.
+interactive. To run the same live plan with managed tmux windows, summaries,
+and automatic diagnostic ZIPs:
+
+```bash
+bash scripts/proof.sh start --config proof.live.example.json
+```
+
+Use `bash scripts/proof.sh start --from RUN_DIRECTORY` to repeat a managed saved
+plan in a fresh directory. Managed runs use the layout and controls documented
+in [OPERATIONS.md](OPERATIONS.md); `history`/`compare` above operate on experiment
+runner directories. Mock fault rules are rejected in live configurations.

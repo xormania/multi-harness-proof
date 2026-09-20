@@ -44,12 +44,15 @@ def agent_settings(peer, values=None):
     values = values or {}
     object_keys(values, ("binary", "profile", "model", "reasoning"), "agent " + peer)
     profile = values.get("profile", "economy")
-    if profile not in {"economy", "existing"}:
+    if profile not in {"economy", "existing", "coordination"}:
         raise ValueError("Unknown agent profile")
     defaults = {"binary": peer, "profile": profile, "model": None, "reasoning": None}
     if profile == "economy":
         defaults.update(model={"codex": "gpt-5.6-luna", "claude": "haiku", "grok": None}[peer],
                         reasoning=None if peer == "claude" else "low")
+    elif profile == "coordination":
+        defaults.update(model={"codex": "gpt-5.6-luna", "claude": "sonnet", "grok": "grok-4.5"}[peer],
+                        reasoning="low")
     defaults.update(values)
     for key in ("binary", "model", "reasoning"):
         value = defaults[key]

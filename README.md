@@ -10,10 +10,14 @@ participant stays in one native session throughout the experiment.
 The output is evidence: message traces, verified replies, scored work, and
 diagnostics that explain what succeeded or failed on a particular installation.
 
-> **Experimental:** version 0.3.2 includes 24 mocked end-to-end behavior scenarios
-> and configurable coordination experiments. Startup now waits for Claude's
-> channel handler registration; a complete live pass remains unverified.
-> See [validation status](VALIDATION.md).
+> **Live basics demonstrated:** the messaging baseline passed 9/9 checks, and
+> the first fixture run passed all 15 messaging checks. Work accuracy and repeated
+> message handling exposed separate failures; the full live fixture suite remains
+> unverified. [Read the evidence and limits](LIVE_RESULTS.md).
+>
+> **Version 0.4.0** adds managed tmux runs, automatic names and diagnostic ZIPs,
+> saved-plan reruns, clearer partial results, and Luna/Sonnet/Grok 4.5 defaults.
+> [Validation status](VALIDATION.md) distinguishes mocked coverage from live results.
 
 ## What gets tested
 
@@ -42,7 +46,7 @@ transports messages; the actual agents must invoke the tools and solve the task.
 - Installed and authenticated **Codex**, **Claude Code**, and **xAI Grok Build** CLIs,
   available as `codex`, `claude`, and `grok` in the current shell.
 - Claude Code support for custom development channels on your installation/account.
-- Optional: `tmux` to open the relay and three harness windows together.
+- `tmux` for the recommended managed launcher; separate terminals also work.
 
 The launcher uses existing installations and authentication. It does not install
 or upgrade harnesses. Runs with two participants are also supported.
@@ -124,79 +128,70 @@ See [behavior tests and telemetry](TESTING.md) and
 [configurable experiments, run history, and comparison](EXPERIMENTS.md). Both
 workflows retain the real verifier and label simulated reports `mock`.
 
-### First run: messaging
-
-Start with `--no-work`: six round trips and three busy-delivery checks. This
-checks messaging and retained context before adding the work fixture.
-Choose either tmux or separate terminals below.
-
-#### Launch with tmux
+### Run with automatic session management
 
 ```bash
-bash scripts/tmux.sh runs/live1 --no-work
+# Full suite: messaging plus the work fixture.
+bash scripts/proof.sh start
+
+# For a first installation, test the messaging baseline alone.
+bash scripts/proof.sh start --no-work
 ```
 
-This creates a fresh run directory and a new tmux session with **relay**, **codex**,
-**claude**, and **grok** windows. It opens the Claude window first for its native
-development-channel and workspace prompts. Use `Ctrl-b w` to switch windows, and
-check Grok's window for any permission prompts for the proof tools.
+Choose one command per run. The launcher creates a fresh, automatically named
+run under `runs/`, saves its settings and fixture, and opens a dedicated tmux
+session with a dashboard and one window per harness. It requests **Luna, Sonnet,
+and Grok 4.5, all with low reasoning**.
 
-The experiment starts automatically when all participants and tools are ready.
-Watch the relay window for results and the run directory. The helper changes
-settings only for the tmux session/windows it creates.
-The relay prints each peer's missing startup conditions as they change. Claude
-has a separate channel-handler registration gate after its MCP connection.
+Accept Claude's development-channel prompt and respond to Grok's proof-tool
+permission requests. Those are native interactive approvals; the launcher does
+not bypass them. Press **Ctrl+B, then W** to choose a window. The dashboard shows
+startup conditions, the current phase, message counts, and work results.
 
-`session launched` means a native session exists; proof readiness still requires
-the agent's verified ready report. `Pane is dead (status 0)` is a wrapper exit,
-not a proof result. Read `report.json` or the relay window for the verdict.
-After a failed run, close Claude with `/exit`, detach with `Ctrl-b d`, update
-with `git pull --ff-only`, and retry using a fresh directory. Keep the failed
-run's evidence.
+**When it finishes:** the launcher closes its harness windows, returns to the
+dashboard, and writes `summary.txt`, `summary.json`, and a timestamped diagnostic
+ZIP under that run's `archives/`. The summary separates missing replies, work
+accuracy errors, and native-tool evidence failures. No manual ZIP naming or
+routine tmux cleanup is needed. The dashboard stays open so you can read it.
 
-#### Launch in separate terminals
+```bash
+bash scripts/proof.sh list
+bash scripts/proof.sh status RUN_DIRECTORY
+bash scripts/proof.sh stop RUN_DIRECTORY
+bash scripts/proof.sh close RUN_DIRECTORY
 
-From the project directory, run each command in its own terminal:
+# Repeat the saved plan and fixture in a NEW run.
+bash scripts/proof.sh start --from RUN_DIRECTORY
+```
+
+Use the directory printed by `start` or `list` for `RUN_DIRECTORY`.
+`stop` finalizes an active run; `close` removes a finished dashboard and retains
+its files. Detach with **Ctrl+B, then D** to leave a run running.
+
+See [managed-run operations](OPERATIONS.md) for model overrides, configured
+scenarios, permission handling, transcript capture, recollection, and recovery.
+The protocol instructions and pass predicate are unchanged by the new models.
+
+### Separate terminals and the original launcher
+
+Manual launchers remain available with their original `economy` defaults:
 
 | Terminal | Command |
 | --- | --- |
-| Relay | `bash scripts/start.sh runs/live1 --no-work` |
-| Codex | `bash scripts/agent.sh codex runs/live1` |
-| Claude | `bash scripts/agent.sh claude runs/live1` |
-| Grok | `bash scripts/agent.sh grok runs/live1` |
+| Relay | `bash scripts/start.sh runs/manual1 --no-work` |
+| Codex | `bash scripts/agent.sh codex runs/manual1 --profile coordination` |
+| Claude | `bash scripts/agent.sh claude runs/manual1 --profile coordination` |
+| Grok | `bash scripts/agent.sh grok runs/manual1 --profile coordination` |
 
-Start the relay first. It also prints absolute-path commands for terminals opened
-elsewhere. Accept Claude's native development-channel prompt when shown, and
-respond to Grok's proof-tool permission prompts in its terminal. Those prompts
-are serialized and may recur for every tool call; there is no blanket approval.
-Agent messages
-then travel between sessions automatically.
+Start the relay first; each command runs in its own terminal. Explicit
+`--profile coordination` requests the newer models. Existing directories are
+refused. The original `scripts/tmux.sh` also remains available but does not provide
+the managed launcher's automatic finalization and collection.
 
-**Use a fresh run directory for every attempt.** Existing runs are never
-overwritten or silently resumed. With no directory argument, `scripts/start.sh`
-chooses a new name under `runs/`.
-
-### Review, then add the work fixture
-
-Watch the relay and `runs/live1/events.jsonl` for progress. After the run ends,
-inspect `runs/live1/report.json` and preserve any diagnostics before retrying.
-Resolve incomplete messaging checks before testing work overlap.
-
-Close the first run's harness sessions, then launch the full suite in a fresh
-directory:
-
-```bash
-bash scripts/tmux.sh runs/live2
-```
-
-For separate terminals, use `bash scripts/start.sh runs/live2` and launch each
-agent with `runs/live2` in the commands above. The full suite repeats the messaging
-checks, then adds six messages during work and three work scores. A successful
-first run establishes the messaging baseline; the work stage separately tests
-answer accuracy and message delivery before the fixture is finished. Later
-batches are released by the controller, so a fast agent cannot finish before
-the burst arrives. This measures interleaving with unfinished work, not
-simultaneous computation; busy-tool delivery is a separate check.
+After a messaging baseline passes, omit `--no-work` in a new run to add the
+fixture. Its gated later batches preserve unfinished work while the burst is
+submitted. This measures interleaving and answer accuracy, not simultaneous
+model computation.
 
 ## How coordination works
 
@@ -253,15 +248,16 @@ outside the proof. Neither helper changes the permission policy.
 
 ## Results and diagnostics
 
-For the manual example above:
+Managed runs print their final summary and create a diagnostic ZIP automatically.
+To inspect or recollect either a managed run or an older manual run:
 
 ```bash
-cat runs/live1/report.json
-python3 proof.py bundle --dir runs/live1 --out live1-diagnostics.zip
+bash scripts/proof.sh status RUN_DIRECTORY
+bash scripts/proof.sh collect RUN_DIRECTORY
 ```
 
-Use `runs/live2` and a different bundle filename for the full run. For other run
-names, substitute the directory printed by the launcher.
+The full report lives in `RUN_DIRECTORY/run/report.json` for managed runs,
+or directly in the directory for manual runs. Nothing is uploaded automatically.
 
 | Result | Meaning |
 | --- | --- |
@@ -272,7 +268,8 @@ names, substitute the directory printed by the launcher.
 
 The overall run passes only when all selected checks pass. On an incomplete
 stage, the runner preserves earlier results and reports how many message cases
-were not run. Diagnose incomplete runs using the evidence: launch errors, model
+were not run. Within an already-launched work burst, every exchange is evaluated
+independently; one missing reply does not hide other complete exchanges. Diagnose incomplete runs using the evidence: launch errors, model
 behavior, account policy, and transport compatibility are different failure modes.
 For example, verified round trips followed by an unsupported Grok busy-delivery
 method remain useful evidence of idle messaging. They do not establish a busy
@@ -311,6 +308,8 @@ Local telemetry is enabled for every run:
 | Native requests, responses, notifications, launch details, timeouts, and exceptions | `codex-trace.jsonl`, `grok-trace.jsonl` |
 | MCP calls, tool arguments/results, and channel notifications | `mcp-claude-trace.jsonl`, `mcp-grok-trace.jsonl` |
 | Harness diagnostics | `codex-stderr.log`, `grok-stderr.log`, `claude-trace.jsonl`, `claude-debug.log` |
+| Exact-run Claude conversation snapshot and explicit capture status | `claude-transcript.jsonl`, `claude-transcript-capture.json` |
+| Managed lifecycle, progress, readable results, and pane snapshots | `session.json`, `controller.log`, `progress.json`, `summary.*`, `*-terminal.log` |
 | Runtime information and hashes of the proof source and fixture | `manifest.json` |
 | Configured launch requests and the copied work input | `settings.json`, `fixture.json` |
 
@@ -327,38 +326,36 @@ redacts known credential values. **Review a bundle before sharing it publicly:**
 test prompts, responses, and local paths are intentionally retained, and native
 debug output may contain sensitive strings that redaction does not recognize.
 
-To stop, press `Ctrl-C` in the relay. It saves an incomplete report and releases
-pending holds. Codex/Grok wrappers exit; close Claude with `/exit`. If a harness
-hangs, interrupt it in its own terminal. Start a fresh run to retry.
+For managed runs, use `bash scripts/proof.sh stop RUN_DIRECTORY` to finalize
+and collect. For manual runs, press `Ctrl-C` in the relay and close Claude with
+`/exit`. Start a fresh run to retry.
 
 ## Models and run options
 
-The default profile is named `economy` in the CLI and requests these starting
-settings:
+The managed launcher defaults to the `coordination` profile:
 
 | Participant | Requested model | Requested reasoning |
 | --- | --- | --- |
 | Codex | `gpt-5.6-luna` | `low` |
-| Claude Code | `haiku` | No override |
-| Grok Build | Existing Grok model selection | `low` |
+| Claude Code | `sonnet` | `low` |
+| Grok Build | `grok-4.5` | `low` |
 
-Model choice is independent of harness identity. Different models and reasoning
-levels can help distinguish task-following failures from transport failures.
-Availability and supported effort levels depend on the installation/account;
-the initial defaults have not yet been verified in live runs.
-
-Use separate terminals for custom settings. Each command below is an alternative
-launch for its participant, not an additional participant in the same run:
+These are requested settings, not a claim of effective vendor selection.
+Availability and effort support depend on the installed harness and account.
+The new combination still needs a live run. Historical live findings used
+Haiku and Grok's default model; see [LIVE_RESULTS.md](LIVE_RESULTS.md).
 
 ```bash
-bash scripts/agent.sh claude runs/live1 --model sonnet --reasoning low
-bash scripts/agent.sh grok runs/live1 --profile existing
-bash scripts/agent.sh codex runs/live1 --binary /path/to/codex
+bash scripts/proof.sh start --codex-reasoning medium
+bash scripts/proof.sh start --from RUN_DIRECTORY --claude-model sonnet
+bash scripts/proof.sh start --config proof.live.example.json
 ```
 
-`--model` and `--reasoning` are available for all adapters. `--profile existing`
-leaves model/reasoning defaults to the harness unless explicitly overridden.
-Settings are passed through invocation arguments or native session parameters.
+The existing `economy` profile remains Luna/low, Haiku/no effort override, and
+Grok's existing model/low. Manual launches and configurations without an explicit
+profile retain that default. `existing` leaves both choices to the harness.
+The shipped live plan now explicitly selects `coordination` for all peers.
+All profiles allow explicit per-agent model and reasoning overrides.
 
 Other run options:
 
@@ -382,11 +379,10 @@ Approve native channel and proof-tool prompts promptly: a prompt that blocks the
 initial ready report is subject to the readiness wait, not a new 600-second wait.
 
 Set `PROOF_PYTHON=/path/to/python3` when using the Bash scripts to select another
-Python interpreter. The tmux helper uses all three participants and the default
-profile; it forwards run options such as `--no-work`, `--timeout`, and
-`--startup-timeout` after the directory argument. Use separate terminals for
-`--peers` or custom agent settings. See `python3 proof.py --help` for the CLI entry
-points.
+Python interpreter. The managed launcher accepts a live JSON plan for selected
+peers, message pairs, and burst sizes. The original `scripts/tmux.sh` remains a
+manual three-peer helper. See `python3 proof.py session start --help` and
+[EXPERIMENTS.md](EXPERIMENTS.md) for configuration.
 
 ## Configuration and limits
 

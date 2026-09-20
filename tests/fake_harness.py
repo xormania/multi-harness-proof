@@ -188,7 +188,12 @@ class Fake:
         if event == "PreToolUse" and self.scenario == "missing-hook":
             self.fault("missing-claude-hook")
             return
+        transcript = Path.cwd() / (self.session + ".jsonl")
+        with transcript.open("a") as handle:
+            handle.write(json.dumps({"type": "system", "sessionId": self.session,
+                                     "mock_hook": event, "mode": "mock"}) + "\n")
         packet = {"session_id": self.session, "prompt_id": self.active_turn,
+                  "transcript_path": str(transcript),
                   "hook_event_name": event, **fields}
         for group in self.hooks.get(event, []):
             for hook in group["hooks"]:

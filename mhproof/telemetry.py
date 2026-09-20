@@ -72,14 +72,19 @@ def manifest(root, peers, timeout):
 
 def bundle(directory, output):
     directory, output = Path(directory).resolve(), Path(output).resolve()
-    # Never archive credentials, workspaces, unrelated files, or native histories.
-    config = json.loads((directory / "run.json").read_text())
-    redactor = Redactor(config["tokens"].values())
+    # Only the explicitly captured, redacted transcript for this run is allowed.
+    # Never archive credential configs, workspaces, or unrelated native histories.
+    config_path = directory / "run.json"
+    config = json.loads(config_path.read_text()) if config_path.exists() else {}
+    redactor = Redactor(config.get("tokens", {}).values())
     allowed = {"report.json", "manifest.json", "events.jsonl", "claude-debug.log", "settings.json", "fixture.json"}
     allowed |= {p + "-stderr.log" for p in ("codex", "grok")}
     allowed |= {p + "-trace.jsonl" for p in ("codex", "grok", "claude", "mcp-claude", "mcp-grok")}
+    allowed |= {"claude-transcript.jsonl", "claude-transcript-capture.json", "progress.json",
+                "summary.json", "summary.txt", "session.json", "controller.log", "preflight.json"}
+    allowed |= {p + "-terminal.log" for p in ("codex", "grok", "claude")}
     if config.get("mode") == "mock":
-        allowed |= {"scenario.json", "behavior.json", "controller.log"}
+        allowed |= {"scenario.json", "behavior.json"}
         allowed |= {p + "-launcher.log" for p in ("codex", "claude", "grok")}
         allowed |= {"fake-" + p + "-faults.jsonl" for p in ("codex", "claude", "grok")}
     with zipfile.ZipFile(output, "x", zipfile.ZIP_DEFLATED) as archive:

@@ -36,8 +36,8 @@ def main(argv=None):
     agent.add_argument("--binary", help="Installed CLI path or name")
     agent.add_argument("--model", help="Override the selected profile's model for this invocation")
     agent.add_argument("--reasoning", help="Native effort level (for models that support it)")
-    agent.add_argument("--profile", choices=("economy", "existing"),
-                       help="economy: Codex Luna/low, Claude Haiku, Grok default/low; existing: use harness defaults")
+    agent.add_argument("--profile", choices=("economy", "existing", "coordination"),
+                       help="coordination: Luna/Sonnet/Grok 4.5, low; economy: Luna/Haiku/Grok default; existing: harness defaults")
     mcp = sub.add_parser("mcp", help="Internal stdio MCP server for the adapters")
     mcp.add_argument("--dir", required=True)
     mcp.add_argument("--peer", required=True, choices=PEERS)
@@ -54,8 +54,46 @@ def main(argv=None):
     compare = sub.add_parser("compare", help="Compare two experiment snapshots and their evidence")
     compare.add_argument("left")
     compare.add_argument("right")
+    managed = sub.add_parser("session", help="Start, inspect, collect, or close a managed tmux run")
+    actions = managed.add_subparsers(dest="action", required=True)
+    launch = actions.add_parser("start", help="Create a fresh run, launch harnesses, and collect results automatically")
+    launch.add_argument("--dir", help="Optional fresh run directory; otherwise generated automatically")
+    launch.add_argument("--label", help="Short label for automatically named runs")
+    source = launch.add_mutually_exclusive_group()
+    source.add_argument("--config", help="Existing live experiment JSON plan")
+    source.add_argument("--from", dest="previous", help="Reuse a managed run's saved plan in a NEW run")
+    launch.add_argument("--no-work", action="store_true")
+    launch.add_argument("--timeout", type=positive)
+    launch.add_argument("--startup-timeout", type=positive)
+    launch.add_argument("--detach", action="store_true", help="Start without attaching this terminal")
+    for peer in PEERS:
+        launch.add_argument("--" + peer + "-model")
+        launch.add_argument("--" + peer + "-reasoning")
+    for action in ("status", "attach", "stop", "close", "collect", "supervise", "controller"):
+        cmd = actions.add_parser(action)
+        cmd.add_argument("directory")
+        if action == "status":
+            cmd.add_argument("--watch", action="store_true")
+    listing = actions.add_parser("list")
+    listing.add_argument("--root", default="runs")
     args = parser.parse_args(argv)
     try:
+        if args.command == "session":
+            from . import sessions
+            if args.action == "start":
+                return sessions.start(args)
+            if args.action == "list":
+                sessions.list_runs(args.root)
+                return 0
+            if args.action in {"supervise", "controller"}:
+                if args.action == "supervise":
+                    import signal
+                    def interrupted(*_):
+                        raise KeyboardInterrupt
+                    for signum in (signal.SIGTERM, signal.SIGHUP):
+                        signal.signal(signum, interrupted)
+                return getattr(sessions, args.action)(args.directory)
+            return sessions.operate(args.action, args.directory, getattr(args, "watch", False))
         if args.command == "doctor":
             found = {}
             for peer in args.peers:

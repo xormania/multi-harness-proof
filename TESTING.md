@@ -71,7 +71,9 @@ competence nor vendor compatibility.
 `MATCHED` means the verifier produced the expected outcome. For a crash, that
 means an **unverified proof** with the specific failure evidence. A timeout at an
 unrelated stage is insufficient. Mismatches return a nonzero exit code. Earlier
-successful cases remain visible and no later case passes after an incomplete one.
+successful cases remain visible. Sequential baseline checks stop at the first
+incomplete case. Already-launched work exchanges are evaluated independently,
+so one dropped burst message does not hide complete neighboring exchanges.
 
 ## Telemetry
 
@@ -128,10 +130,29 @@ run directories or diagnostics.
 Run `python3 proof.py doctor`, then start with the README's messaging-only run:
 
 ```bash
-bash scripts/tmux.sh runs/live1 --no-work
+bash scripts/proof.sh start --no-work
 ```
 
 Preserve its diagnostics before attempting the work fixture in another fresh
 directory. Configured live runs are also described in [EXPERIMENTS.md](EXPERIMENTS.md).
 Mocks cannot authenticate accounts, accept native channel prompts, verify model
 discipline, or establish compatibility with installed CLI versions.
+
+## Managed lifecycle and transcript tests
+
+Additional process tests launch the real controller, adapters, hooks, and relay
+against fake harness executables through a simulated tmux lifecycle. They cover
+full completion and collection, partial peer launch failure, orderly stop,
+controller failure before a report, preflight failure, missing tmux, ownership
+checks, unique run names, and saved-plan/fixture preservation. They make no model
+calls and do not establish real tmux compatibility.
+
+Transcript checks cover exact native identity, redaction, read-only source
+handling, permissions, a partially written final JSONL row, and rejection of
+unrelated sessions and leaf symlinks. A dropped two-message Claude work burst
+must retain the other 13 verified message cases and all three work scores.
+Managed summaries and ZIPs are collected on success and failure; repeated
+collection preserves earlier archives. See [OPERATIONS.md](OPERATIONS.md).
+
+Public live observations, including a successful baseline and failed repeated
+fixture handling, are documented separately in [LIVE_RESULTS.md](LIVE_RESULTS.md).

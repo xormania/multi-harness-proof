@@ -21,7 +21,10 @@ context retention. Keep changes focused on proving those mechanics.
 - Run `bash scripts/test.sh` after protocol/concurrency changes. The fixtures
   test our plumbing, not vendor compatibility. Document live testing separately.
 - Keep run tokens, transcripts, generated configs, local paths, and credentials
-  out of commits and distributable ZIPs. Use fresh run directories.
+  out of commits and source distribution ZIPs. Local diagnostic bundles may
+  contain redacted test transcripts and paths; never upload them automatically.
+  Read only the exact native transcript identified by this run's hook. Never
+  modify native history or collect unrelated sessions. Use fresh run directories.
 - Do not expand this into benchmarking, role orchestration, or a capability
   registry without a separate request.
 

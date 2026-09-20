@@ -13,8 +13,8 @@
     "burst_per_peer": 2
   },
   "agents": {
-    "codex": {"profile": "economy"},
-    "claude": {"profile": "economy"},
-    "grok": {"profile": "economy"}
+    "codex": {"profile": "coordination"},
+    "claude": {"profile": "coordination"},
+    "grok": {"profile": "coordination"}
   }
 }

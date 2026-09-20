@@ -1,12 +1,28 @@
 # Validation status
 
-Date: 2026-09-19. Runtime: Python 3.12, Linux.
+Updated: 2026-09-20. Offline runtime: Python 3.12, Linux.
+
+Operator-supplied live results demonstrate the messaging baseline and one full
+set of messaging checks during work. The full fixture verdict remains unverified
+because of work errors and repeated-run message handling failures. See
+[LIVE_RESULTS.md](LIVE_RESULTS.md) for versions, evidence, and limits.
 
 ## Verified locally
 
-- Version 0.3.2: **81 offline tests passed** in 165.288 seconds, including 24
+- Version 0.4.0: **95 offline tests passed** in 194.538 seconds, including 24
   process-level behavior scenarios, configurable experiments, updater checks,
-  and the existing unit/integration checks.
+  and 14 new managed-lifecycle/transcript tests. No real model calls were made.
+- Managed completion, stop, partial launch failure, controller crash, missing
+  tmux, and preflight failures retain summaries and diagnostic archives.
+  Process tests use the real controller/adapters against fake harnesses and a
+  simulated tmux lifecycle; they do not certify real terminal behavior.
+- Exact-session transcript snapshots redact known credentials and leave native
+  sources untouched. Tests reject unrelated identity and leaf symlinks, record
+  partial writes, and check archive exclusions. Saved-plan reruns preserve old
+  settings and fixture files. Cleanup refuses a foreign tmux ownership token.
+- A mocked two-message Claude work drop preserves 13 verified message cases and
+  all work scores. Every already-launched burst exchange is evaluated with the
+  original case predicate, including during failure finalization.
 - The integration test runs the actual relay, adapters, MCP server, and verifier
   against deterministic **fake** Codex, Claude, and Grok processes. It checks
   all 15 message cases, three work scores, and independently supplied native
@@ -112,24 +128,25 @@ debug log before queuing startup instructions. The native log format is an
 explicit compatibility dependency, not a documented readiness acknowledgment.
 Missing/changed output leaves the run unverified with per-peer startup diagnostics;
 actual receipt still requires the same memory marker and native tool evidence.
-The fix has not yet been tested in a patched live run.
+The subsequent 0.3.2 live baseline passed all nine messaging checks. Two full
+fixture runs also passed readiness and the same nine baseline checks. This
+supersedes the earlier startup-only validation; see [LIVE_RESULTS.md](LIVE_RESULTS.md).
 
-## Still requires a local live run
+## Remaining live validation
 
-Codex, Claude Code, and Grok Build executables were all absent here. No real
-model calls were made. Authentication, account policies, preview-channel access,
-exact installed CLI compatibility, model/effort selection, and actual agent
-behavior remain unverified. The tmux helper was syntax-checked, not interactively
-exercised in a real user's terminal.
+No real Codex, Claude Code, Grok Build, or tmux executable was available in the
+0.4.0 development environment. The new managed tmux lifecycle, native transcript
+capture, and Luna/Sonnet/Grok 4.5 low-reasoning combination need a local live run.
+The older operator-supplied 0.3.2 results are evidence for that tested installation,
+not a live certification of the new launcher or model settings.
 
-In particular, confirm that Claude loads the channel from the invocation's MCP
-configuration and executes the run-local hooks, and that the installed Grok
-build emits the tool and completion notifications used by the adapter. Startup
-requires a channel-delivered memory marker and matching native tool observation;
-MCP readiness alone is not a pass. Grok permission-rule flags remain unapplied;
+Authentication, account policies, preview-channel access, and exact installed
+CLI compatibility remain installation-dependent. Claude's registration log is
+still a version-sensitive gate. Grok permission-rule flags remain unapplied;
 the adapter retains serialized human approval. The MCP server implements only
 protocol version 2025-06-18; clients must accept that negotiated version.
 
-Each live run should produce its own `report.json`, `events.jsonl`, native
-traces, and a diagnostic ZIP if needed. Preserve that evidence before changing
-an adapter. Do not treat this file or fixture-test output as live proof.
+Managed runs preserve their report, events, native traces, transcript capture
+status, summary, and ZIP automatically. Inspect that run's evidence, including
+both work accuracy and message handling. Offline test success, this document,
+and a queued-message receipt cannot establish a live pass.

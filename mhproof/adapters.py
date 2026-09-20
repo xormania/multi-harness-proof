@@ -411,6 +411,7 @@ def claude(client, binary, model, reasoning=None):
     cwd = directory / "workspaces" / "claude"
     cwd.mkdir(parents=True, exist_ok=True)
     session = str(uuid.uuid4())
+    write_json(directory / "claude-session.json", {"session_id": session})
     cfg = directory / "claude-mcp.json"
     write_json(cfg, {"mcpServers": {"coord_proof": {
         "command": sys.executable, "args": mcp_args(directory, "claude") + ["--channel"]}}})

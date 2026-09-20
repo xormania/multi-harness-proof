@@ -112,11 +112,22 @@ class Suite:
         self.phase = "initializing"
         self.starting = False
         self.last_startup_progress = None
+        self.last_progress_write = 0
         checks = checks or {}
         self.round_trip_pairs = checks.get("round_trip_pairs", list(itertools.permutations(state.peers, 2)))
         self.busy_pairs = checks.get("busy_pairs", [(state.peers[(i + 1) % len(state.peers)], target)
                                                     for i, target in enumerate(state.peers)])
         self.burst_per_peer = checks.get("burst_per_peer", 2)
+
+    def progress(self, events, force=False):
+        now = time.monotonic()
+        if not force and now - self.last_progress_write < 1:
+            return
+        self.last_progress_write = now
+        write_json(self.state.directory / "progress.json", {
+            "phase": self.phase, "updated": time.time(), "cases_planned": self.planned(),
+            "cases": self.results, "work": self.work_results,
+            "startup": self.startup_evidence(events) if self.starting else {}})
 
     def planned(self):
         return len(self.round_trip_pairs) + len(self.busy_pairs) + (self.burst_per_peer * len(self.state.peers) if self.work else 0)
@@ -144,7 +155,11 @@ class Suite:
     def wait(self, predicate, timeout=None):
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
         while time.monotonic() < deadline:
+            if (self.state.directory.parent / "stop.request").exists() and \
+                    (self.state.directory.parent / "session.json").exists():
+                raise KeyboardInterrupt()
             events = self.state.snapshot()
+            self.progress(events)
             errors = [e for e in events if e["event"] in ("adapter_error", "delivery_error", "unsupported", "adapter_stopped",
                                                         "native_identity_error", "tool_violation", "permission_denied")]
             if errors:
@@ -328,20 +343,31 @@ class Suite:
                 self.wait(burst_submitted)
                 self.state.emit("work_burst_submitted")
                 self.settled()
-        events = self.state.snapshot()
+        self.phase = "work message verification"
+        self.wait(self.refresh_work_evidence)
+        if any(r["status"] != "pass" for r in self.work_results + [x[0] for x in checks]):
+            raise RuntimeError("Work accuracy or message/work overlap was not fully verified; see per-case evidence")
+        print("PASS build-log accuracy and all message/work overlaps", flush=True)
+
+    def refresh_work_evidence(self, events):
         for result in self.work_results:
-            completed = next(e for e in events if e["event"] == "work_completed" and e["peer"] == result["peer"])
-            result.update(status="pass" if completed["correct"] else "incorrect", evidence_seq=completed["seq"],
-                          batches=completed["batches"])
-        for result, challenge in checks:
+            scores = [e for e in events if e["event"] == "work_scored" and e["peer"] == result["peer"]]
+            result["scores"] = [{k: e[k] for k in ("batch", "submitted", "expected", "correct")} for e in scores]
+            completed = next((e for e in events if e["event"] == "work_completed" and e["peer"] == result["peer"]), None)
+            if completed:
+                result.update(status="pass" if completed["correct"] else "incorrect", evidence_seq=completed["seq"],
+                              batches=completed["batches"])
+        checks = [r for r in self.results if r["check"] == "message-during-work"]
+        for result in checks:
             source, target = result["source"], result["target"]
-            evidence = self.wait(lambda ev: case_evidence(ev, source, target, challenge["case_id"],
-                                 challenge["nonce"], self.memories[target], self.state.sessions))
-            events = self.state.snapshot()
+            evidence = case_evidence(events, source, target, result["case_id"],
+                                    result["nonce"], self.memories[target], self.state.sessions)
+            start = next((e for e in events if e["event"] == "work_started" and e["peer"] == target), None)
+            finish = next((e for e in events if e["event"] == "work_completed" and e["peer"] == target), None)
+            if not evidence or not start or not finish:
+                continue
             submitted = next(e for e in events if e["event"] == "submitted" and
                              e.get("message_id") == evidence["challenge_id"] and e["peer"] == target)
-            start = next(e for e in events if e["event"] == "work_started" and e["peer"] == target)
-            finish = next(e for e in events if e["event"] == "work_completed" and e["peer"] == target)
             overlap = start["seq"] < submitted["seq"] < finish["seq"]
             reply = next(e for e in events if e["event"] == "queued" and
                          e["message"].get("id") == evidence["reply_id"])
@@ -349,9 +375,7 @@ class Suite:
             result.update(status="pass" if overlap else "unverified", work_overlap=overlap, **evidence)
             if not overlap:
                 result["detail"] = "Round trip succeeded, but submission did not overlap recipient work"
-        if any(r["status"] != "pass" for r in self.work_results + [x[0] for x in checks]):
-            raise RuntimeError("Work accuracy or message/work overlap was not fully verified; see per-case evidence")
-        print("PASS build-log accuracy and all message/work overlaps", flush=True)
+        return all("event_seqs" in r for r in checks)
 
 
 def run_suite(directory, peers, timeout=180, startup_timeout=600, work=True, mode="live", settings=None):
@@ -409,6 +433,7 @@ def run_suite(directory, peers, timeout=180, startup_timeout=600, work=True, mod
     finally:
         state.close()
         events = state.snapshot()
+        suite.refresh_work_evidence(events)
         for result in suite.results:
             if result["status"] != "pass":
                 result["diagnostics"] = case_diagnostics(events, result, suite.memories[result["target"]])
@@ -423,6 +448,7 @@ def run_suite(directory, peers, timeout=180, startup_timeout=600, work=True, mod
         report["cases_planned"] = planned
         report["cases_not_run"] = planned - len(suite.results)
         write_json(directory / "report.json", report)
+        suite.progress(events, force=True)
         print("\n" + report["status"].upper() + ": " + str(directory / "report.json"), flush=True)
         print("Close the Claude terminal with /exit when finished. Codex/Grok wrappers exit automatically.", flush=True)
         # Give polling adapters one opportunity to see stopped, then close the
