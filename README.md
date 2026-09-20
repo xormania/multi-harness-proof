@@ -1,6 +1,6 @@
 # Multi-Harness Proof
 
-**A local experiment in live coordination between Codex, Claude Code, and Grok Build.**
+**Confirmed proof of live coordination between Codex, Claude Code, and Grok Build.**
 
 Coding harnesses expose different session, tool, and messaging interfaces. This
 project tests whether agents in those harnesses can exchange messages, retain
@@ -10,15 +10,16 @@ participant stays in one native session throughout the experiment.
 The output is evidence: message traces, verified replies, scored work, and
 diagnostics that explain what succeeded or failed on a particular installation.
 
-> **Live basics demonstrated:** the messaging baseline passed 9/9 checks, and
-> the first fixture run passed all 15 messaging checks. Work accuracy and repeated
-> message handling exposed separate failures; the full live fixture suite remains
-> unverified. [Read the evidence and limits](LIVE_RESULTS.md).
+> **Status: CONFIRMED.** The full live proof passed on 2026-09-20 UTC using
+> version 0.4.1: **15/15 message checks, 9/9 correct work batches, and 69/69
+> matched native tool calls** in approximately 4 minutes 35 seconds. Persistent
+> sessions retained context and coordinated during unfinished work. Managed tmux
+> cleanup and automatic diagnostic collection also completed successfully.
+> [Read the live evidence, observed settings, and measured scope](LIVE_RESULTS.md).
 >
-> **Version 0.4.1** includes managed tmux runs, automatic names and diagnostic ZIPs,
-> saved-plan reruns, clearer partial results, and Luna/Sonnet/Grok 4.5 defaults.
-> It also fixes the 0.4.0 tmux startup target error.
-> [Validation status](VALIDATION.md) distinguishes mocked coverage from live results.
+> The PoC's mechanical objective is complete. The repository remains available
+> as a reference implementation and compatibility regression project.
+> [Validation status](VALIDATION.md) separates the live result from offline tests.
 
 ## What gets tested
 
@@ -343,8 +344,10 @@ The managed launcher defaults to the `coordination` profile:
 
 These are requested settings, not a claim of effective vendor selection.
 Availability and effort support depend on the installed harness and account.
-The new combination still needs a live run. Historical live findings used
-Haiku and Grok's default model; see [LIVE_RESULTS.md](LIVE_RESULTS.md).
+The confirming live run used this requested profile. Native telemetry identified
+Claude as `claude-sonnet-5` and Grok as `grok-4.6` / `xhigh`, despite the Grok
+request above. These are recorded run conditions; model selection was not the
+mechanical acceptance criterion. See [LIVE_RESULTS.md](LIVE_RESULTS.md).
 
 ```bash
 bash scripts/proof.sh start --codex-reasoning medium

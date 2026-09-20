@@ -1,7 +1,9 @@
 # Behavior testing
 
 The mock tests check how the plumbing and verifier respond to realistic failures.
-Only a separate live run can establish that installed native harnesses coordinate.
+A separate full live run on 2026-09-20 confirmed the coordination mechanics;
+see [LIVE_RESULTS.md](LIVE_RESULTS.md). Mock outcomes remain evidence about the
+plumbing and verifier, separate from native harness compatibility.
 
 ## Run the checks
 
@@ -154,8 +156,8 @@ must retain the other 13 verified message cases and all three work scores.
 Managed summaries and ZIPs are collected on success and failure; repeated
 collection preserves earlier archives. See [OPERATIONS.md](OPERATIONS.md).
 
-Public live observations, including a successful baseline and failed repeated
-fixture handling, are documented separately in [LIVE_RESULTS.md](LIVE_RESULTS.md).
+The confirmed full live 0.4.1 pass and earlier baseline/fixture failures are
+documented separately in [LIVE_RESULTS.md](LIVE_RESULTS.md).
 
 ## Native tmux regression checks
 

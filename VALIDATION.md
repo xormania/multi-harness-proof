@@ -2,10 +2,31 @@
 
 Updated: 2026-09-20. Offline runtime: Python 3.12, Linux.
 
-Operator-supplied live results demonstrate the messaging baseline and one full
-set of messaging checks during work. The full fixture verdict remains unverified
-because of work errors and repeated-run message handling failures. See
-[LIVE_RESULTS.md](LIVE_RESULTS.md) for versions, evidence, and limits.
+**PoC status: CONFIRMED.** The full live 0.4.1 proof passed on 2026-09-20 UTC.
+
+## Confirmed live result
+
+The reviewed operator-supplied diagnostic bundle records:
+
+- **15/15 message checks passed:** six ordered round trips, three busy checks,
+  and six exchanges during unfinished work. Every work reply arrived before
+  its recipient completed the fixture.
+- **9/9 work batches correct**, with all three agents passing their work scores.
+- **69/69 native tool calls matched**, zero unmatched calls, violations,
+  conflicting call IDs, or observed native session drift.
+- **275.2 seconds** elapsed; report status `pass`, controller exit code 0,
+  all owned harness windows closed, and diagnostics collected automatically.
+- Claude's exact-session transcript captured successfully with 232 records.
+
+Review re-evaluated every case chain, work answer, and the native tool audit from
+the saved evidence. All 18 source hashes and the copied fixture hash matched
+0.4.1. See [LIVE_RESULTS.md](LIVE_RESULTS.md) for tested CLI versions, requested
+and observed model settings, earlier failure evidence, and the measured scope.
+Grok's observed model/effort differed from the request; that is a recorded run
+condition, not a failure of the coordination objective.
+
+This live run confirms the mechanical objective. Offline tests continue to
+exercise failures and verification behavior independently.
 
 ## Version 0.4.1 tmux startup correction
 
@@ -21,12 +42,12 @@ See tmux's [target parser](https://github.com/tmux/tmux/blob/3.4/cmd-find.c) and
 explicitly skipped**. The command-contract regression fails against the 0.4.0
 implementation with the reported error and passes after the correction.
 
-Two real-tmux integration
-checks cover ownership and unrelated-session preservation on a private socket.
+Two real-tmux integration checks cover ownership and unrelated-session preservation on a private socket.
 For this verification, tmux 3.3a was available in an isolated temporary directory,
 but the host denied Unix-domain sockets with `EPERM`; both native checks explicitly
-skip. This is not a real-tmux pass. The production correction still needs the
-operator's next local launch.
+skip. Those skips remain part of the offline record. The subsequent full live
+0.4.1 run above confirms that the corrected managed launch completed on the
+operator's installation, including cleanup and automatic collection.
 
 ## Verified locally
 
@@ -153,13 +174,12 @@ The subsequent 0.3.2 live baseline passed all nine messaging checks. Two full
 fixture runs also passed readiness and the same nine baseline checks. This
 supersedes the earlier startup-only validation; see [LIVE_RESULTS.md](LIVE_RESULTS.md).
 
-## Remaining live validation
+## Validation boundaries and continued use
 
-No real Codex, Claude Code, Grok Build, or tmux executable was available in the
-0.4.0 development environment. The new managed tmux lifecycle, native transcript
-capture, and Luna/Sonnet/Grok 4.5 low-reasoning combination need a local live run.
-The older operator-supplied 0.3.2 results are evidence for that tested installation,
-not a live certification of the new launcher or model settings.
+The maintainer's offline environment made no real model calls. The confirmed
+live result comes from the reviewed operator-supplied 0.4.1 bundle. Earlier
+0.3.2 failures remain documented as observed failure modes; they do not change
+the later completed proof.
 
 Authentication, account policies, preview-channel access, and exact installed
 CLI compatibility remain installation-dependent. Claude's registration log is
@@ -168,6 +188,6 @@ the adapter retains serialized human approval. The MCP server implements only
 protocol version 2025-06-18; clients must accept that negotiated version.
 
 Managed runs preserve their report, events, native traces, transcript capture
-status, summary, and ZIP automatically. Inspect that run's evidence, including
-both work accuracy and message handling. Offline test success, this document,
-and a queued-message receipt cannot establish a live pass.
+status, summary, and ZIP automatically. Future runs can test compatibility and
+reliability as harnesses evolve. Their verdicts remain specific to their own
+recorded evidence; the confirmed PoC does not make future runs pass automatically.

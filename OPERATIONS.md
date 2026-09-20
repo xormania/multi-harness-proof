@@ -141,10 +141,12 @@ failure, or forcibly destroying the tmux server can prevent finalization. A save
 the controller log, and launch a fresh run; do not delete the failed directory.
 Use the managed `stop` command for routine cancellation.
 
-The new supervisor is tested with real project processes and fake vendor
-executables plus a simulated tmux lifecycle. Real tmux interaction and the new
-model combination still need a local live run. Existing manual launchers remain
-available; their model default stays `economy` for reproducibility.
+The managed launcher completed the full live 0.4.1 proof on 2026-09-20 UTC,
+including harness cleanup, transcript capture, summaries, and ZIP collection.
+[Live results](LIVE_RESULTS.md) record the native settings actually observed.
+Mocked lifecycle tests separately cover failure handling; optional real-tmux
+checks use an isolated socket. Existing manual launchers remain available; their
+model default stays `economy` for reproducibility.
 
 ## Version 0.4.0 startup target error
 
