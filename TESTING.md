@@ -1,9 +1,23 @@
 # Behavior testing
 
+[← Project overview](README.md) · [Documentation map](README.md#documentation)
+
 The mock tests check how the plumbing and verifier respond to realistic failures.
 A separate full live run on 2026-09-20 confirmed the coordination mechanics;
 see [LIVE_RESULTS.md](LIVE_RESULTS.md). Mock outcomes remain evidence about the
 plumbing and verifier, separate from native harness compatibility.
+
+<details>
+<summary>On this page</summary>
+
+- [Run the checks](#run-the-checks)
+- [What runs end to end](#what-runs-end-to-end)
+- [Telemetry](#telemetry)
+- [Live checks](#live-checks)
+- [Managed lifecycle and transcript tests](#managed-lifecycle-and-transcript-tests)
+- [Native tmux regression checks](#native-tmux-regression-checks)
+
+</details>
 
 ## Run the checks
 

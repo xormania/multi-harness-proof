@@ -1,8 +1,22 @@
 # Validation status
 
+[← Project overview](README.md) · [Documentation map](README.md#documentation)
+
 Updated: 2026-09-20. Offline runtime: Python 3.12, Linux.
 
 **PoC status: CONFIRMED.** The full live 0.4.1 proof passed on 2026-09-20 UTC.
+
+<details>
+<summary>On this page</summary>
+
+- [Confirmed live result](#confirmed-live-result)
+- [Version 0.4.1 tmux startup correction](#version-041-tmux-startup-correction)
+- [Verified locally](#verified-locally)
+- [Behavior and experiment coverage](#behavior-and-experiment-coverage)
+- [Reported live startup failure and scoped fix](#reported-live-startup-failure-and-scoped-fix)
+- [Validation boundaries and continued use](#validation-boundaries-and-continued-use)
+
+</details>
 
 ## Confirmed live result
 

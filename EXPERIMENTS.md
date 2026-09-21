@@ -1,11 +1,23 @@
 # Configurable coordination experiments
 
+[← Project overview](README.md) · [Documentation map](README.md#documentation)
+
 A configuration describes the coordination plan and launch settings. Each
 invocation creates a fresh timestamped directory with a random suffix, preserves
 the input configuration and resolved defaults, copies the work fixture, and
 retains all reports and telemetry. Editing the configuration and rerunning never
 overwrites previous evidence. Evidence is never automatically deleted and delivered messages are not retried.
 The optional managed launcher closes only its own finished harness windows.
+
+<details>
+<summary>On this page</summary>
+
+- [Start with the supplied mock experiment](#start-with-the-supplied-mock-experiment)
+- [Configuration fields](#configuration-fields)
+- [Repeat and compare](#repeat-and-compare)
+- [Configured live run](#configured-live-run)
+
+</details>
 
 ## Start with the supplied mock experiment
 

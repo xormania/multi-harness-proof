@@ -1,9 +1,21 @@
 # Confirmed live proof
 
+[← Project overview](README.md) · [Documentation map](README.md#documentation)
+
 **Status: CONFIRMED — cross-harness coordination within persistent native
 sessions is proved.** On 2026-09-20 UTC, version 0.4.1 completed the full live
 suite: all 15 message checks, all nine work batches, and the native tool audit
 passed. The PoC has achieved its mechanical objective.
+
+<details>
+<summary>On this page</summary>
+
+- [Confirming run — version 0.4.1](#confirming-run--version-041)
+- [Earlier live evidence — version 0.3.2](#earlier-live-evidence--version-032)
+- [Evidence basis and publication boundary](#evidence-basis-and-publication-boundary)
+- [Lessons available for integration](#lessons-available-for-integration)
+
+</details>
 
 ## Confirming run — version 0.4.1
 

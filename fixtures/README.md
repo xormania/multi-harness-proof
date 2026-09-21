@@ -1,9 +1,17 @@
 # Build-log triage fixture
 
-Each batch contains synthetic CI job outcomes. A job can have multiple attempts,
-and rows are deliberately out of order. Only the highest numbered attempt for
-each job counts. Report the IDs of jobs whose latest attempt is `FAIL`, and the
-sum of `failed_tests` for those jobs. `WARN` and `PASS` are not failures.
+[← Project overview](../README.md) · [Testing guide](../TESTING.md)
+
+Each batch contains synthetic CI job outcomes. Jobs can have multiple attempts,
+and rows are deliberately out of order.
+
+## Scoring rules
+
+1. Select the **highest numbered attempt** for each job.
+2. Report the IDs whose selected attempt is **`FAIL`**.
+3. Sum `failed_tests` for those selected failures. **`WARN` and `PASS` do not count.**
+
+## Coordination during work
 
 Each agent receives the same three batches and is scored independently. The
 controller asks each agent to finish one batch and end its turn. After every
